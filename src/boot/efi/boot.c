@@ -582,7 +582,6 @@ static BOOLEAN menu_run(
         BOOLEAN run = TRUE;
         BOOLEAN wait = FALSE;
         BOOLEAN allow_editor = FALSE;
-        BOOLEAN cleared_screen = FALSE;
 
         graphics_mode(FALSE);
         uefi_call_wrapper(ST->ConIn->Reset, 2, ST->ConIn, FALSE);
@@ -594,15 +593,12 @@ static BOOLEAN menu_run(
 
         if (config->console_mode_change != CONSOLE_MODE_KEEP) {
                 err = console_set_mode(&config->console_mode, config->console_mode_change);
-                if (!EFI_ERROR(err))
-                        cleared_screen = TRUE;
-        }
-
-        if (!cleared_screen)
+                if (EFI_ERROR(err)) {
+                        uefi_call_wrapper(ST->ConOut->ClearScreen, 1, ST->ConOut);
+                        Print(L"Error switching console mode to %ld: %r.\r", (UINT64)config->console_mode, err);
+                }
+        } else
                 uefi_call_wrapper(ST->ConOut->ClearScreen, 1, ST->ConOut);
-
-        if (config->console_mode_change != CONSOLE_MODE_KEEP && EFI_ERROR(err))
-                Print(L"Error switching console mode to %ld: %r.\r", (UINT64)config->console_mode, err);
 
         err = uefi_call_wrapper(ST->ConOut->QueryMode, 4, ST->ConOut, ST->ConOut->Mode->Mode, &x_max, &y_max);
         if (EFI_ERROR(err)) {
@@ -1406,6 +1402,7 @@ static VOID config_entry_bump_counters(
 static UINTN config_entry_add_from_file(
                 Config *config,
                 EFI_HANDLE *device,
+                EFI_FILE *root_dir,
                 CHAR16 *path,
                 CHAR16 *file,
                 CHAR8 *content,
@@ -1416,6 +1413,8 @@ static UINTN config_entry_add_from_file(
         UINTN pos = 0;
         CHAR8 *key, *value;
         UINTN len;
+        EFI_STATUS err;
+        EFI_FILE_HANDLE handle;
         _cleanup_freepool_ CHAR16 *initrd = NULL;
 
         entry = AllocatePool(sizeof(ConfigEntry));
@@ -1511,6 +1510,14 @@ static UINTN config_entry_add_from_file(
                 config_entry_free(entry);
                 return pos;
         }
+
+        /* check existence */
+        err = uefi_call_wrapper(root_dir->Open, 5, root_dir, &handle, entry->loader, EFI_FILE_MODE_READ, 0ULL);
+        if (EFI_ERROR(err)) {
+                config_entry_free(entry);
+                return;
+        }
+        uefi_call_wrapper(handle->Close, 1, handle);
 
         /* add initrd= to options */
         if (entry->type == LOADER_LINUX && initrd) {
@@ -1636,7 +1643,7 @@ static VOID config_load_entries(
 
                         err = file_read(entries_dir, f->FileName, 0, 0, &content, NULL);
                         if (!EFI_ERROR(err))
-                                config_entry_add_from_file(config, device, L"\\loader\\entries", f->FileName, content, loaded_image_path);
+                                config_entry_add_from_file(config, device, root_dir, L"\\loader\\entries", f->FileName, content, loaded_image_path);
                 }
                 uefi_call_wrapper(entries_dir->Close, 1, entries_dir);
         }
