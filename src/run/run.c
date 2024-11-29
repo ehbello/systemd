@@ -576,13 +576,13 @@ static int parse_argv(int argc, char *argv[]) {
         } else if (!arg_unit || !with_trigger)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Command line to execute required.");
 
-        if (arg_user && arg_transport != BUS_TRANSPORT_LOCAL)
+        if (arg_user && arg_transport == BUS_TRANSPORT_REMOTE)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                       "Execution in user context is not supported on non-local systems.");
+                                       "Execution in user context is not supported on remote systems.");
 
-        if (arg_scope && arg_transport != BUS_TRANSPORT_LOCAL)
+        if (arg_scope && arg_transport == BUS_TRANSPORT_REMOTE)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                       "Scope execution is not supported on non-local systems.");
+                                       "Scope execution is not supported on remote systems.");
 
         if (arg_scope && (arg_remain_after_exit || arg_service_type))
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
@@ -667,15 +667,8 @@ static int transient_cgroup_set_properties(sd_bus_message *m) {
                 *end = 0;
         }
 
-        if (!isempty(arg_slice)) {
-                if (name) {
-                        char *j = strjoin(name, "-", arg_slice);
-                        free_and_replace(name, j);
-                } else
-                        name = strdup(arg_slice);
-                if (!name)
-                        return log_oom();
-        }
+        if (!isempty(arg_slice) && !strextend_with_separator(&name, "-", arg_slice))
+                return log_oom();
 
         if (!name)
                 return 0;
@@ -1754,7 +1747,7 @@ static int run(int argc, char* argv[]) {
 
         /* If --wait is used connect via the bus, unconditionally, as ref/unref is not supported via the limited direct
          * connection */
-        if (arg_wait || arg_stdio != ARG_STDIO_NONE)
+        if (arg_wait || arg_stdio != ARG_STDIO_NONE || (arg_user && arg_transport != BUS_TRANSPORT_LOCAL))
                 r = bus_connect_transport(arg_transport, arg_host, arg_user, &bus);
         else
                 r = bus_connect_transport_systemd(arg_transport, arg_host, arg_user, &bus);

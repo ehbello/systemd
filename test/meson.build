@@ -57,17 +57,15 @@ if install_tests
 endif
 
 test_network_generator_conversion_sh = find_program('test-network-generator-conversion.sh')
-
-############################################################
-
 test_systemd_tmpfiles_py = find_program('test-systemd-tmpfiles.py')
+hwdb_test_sh = find_program('hwdb-test.sh')
 
 ############################################################
 
 test_sysusers_sh = configure_file(
         input : 'test-sysusers.sh.in',
         output : 'test-sysusers.sh',
-        configuration : substs)
+        configuration : conf)
 if install_tests and conf.get('ENABLE_SYSUSERS') == 1
         install_data(test_sysusers_sh,
                      install_dir : testsdir)
@@ -128,29 +126,17 @@ endif
 
 ############################################################
 
-if conf.get('ENABLE_HWDB') == 1
-        hwdb_test_sh = find_program('hwdb-test.sh')
-        if want_tests != 'false'
-                test('hwdb-test',
-                     hwdb_test_sh,
-                     timeout : 90)
-        endif
-endif
-
-############################################################
-
 if want_tests != 'false' and dmi_arches.contains(host_machine.cpu_family())
         udev_dmi_memory_id_test = find_program('udev-dmi-memory-id-test.sh')
 
         if git.found()
                 out = run_command(
-                        'env', '-u', 'GIT_WORK_TREE',
-                        git,
-                        '--git-dir=@0@/.git'.format(project_source_root),
+                        env, '-u', 'GIT_WORK_TREE',
+                        git, '--git-dir=@0@/.git'.format(project_source_root),
                         'ls-files', ':/test/dmidecode-dumps/*.bin')
         else
                 out = run_command(
-                        'sh', '-c', 'ls @0@/test/dmidecode-dumps/*.bin'.format(project_source_root))
+                        sh, '-c', 'ls @0@/test/dmidecode-dumps/*.bin'.format(project_source_root))
         endif
 
         foreach p : out.stdout().split()

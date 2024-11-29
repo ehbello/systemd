@@ -422,7 +422,7 @@ static int bpf_firewall_prepare_access_maps(
         assert(ret_ipv6_map_fd);
         assert(ret_has_any);
 
-        for (p = u; p; p = UNIT_DEREF(p->slice)) {
+        for (p = u; p; p = UNIT_GET_SLICE(p)) {
                 CGroupContext *cc;
 
                 cc = unit_get_cgroup_context(p);
@@ -463,7 +463,7 @@ static int bpf_firewall_prepare_access_maps(
                         return ipv6_map_fd;
         }
 
-        for (p = u; p; p = UNIT_DEREF(p->slice)) {
+        for (p = u; p; p = UNIT_GET_SLICE(p)) {
                 CGroupContext *cc;
 
                 cc = unit_get_cgroup_context(p);
@@ -587,8 +587,6 @@ int bpf_firewall_compile(Unit *u) {
         return 0;
 }
 
-DEFINE_PRIVATE_HASH_OPS_WITH_VALUE_DESTRUCTOR(filter_prog_hash_ops, void, trivial_hash_func, trivial_compare_func, BPFProgram, bpf_program_unref);
-
 static int load_bpf_progs_from_fs_to_set(Unit *u, char **filter_paths, Set **set) {
         char **bpf_fs_path;
 
@@ -606,7 +604,7 @@ static int load_bpf_progs_from_fs_to_set(Unit *u, char **filter_paths, Set **set
                 if (r < 0)
                         return log_unit_error_errno(u, r, "Loading of ingress BPF program %s failed: %m", *bpf_fs_path);
 
-                r = set_ensure_consume(set, &filter_prog_hash_ops, TAKE_PTR(prog));
+                r = set_ensure_consume(set, &bpf_program_hash_ops, TAKE_PTR(prog));
                 if (r < 0)
                         return log_unit_error_errno(u, r, "Can't add program to BPF program set: %m");
         }
@@ -658,9 +656,10 @@ static int attach_custom_bpf_progs(Unit *u, const char *path, int attach_type, S
                         return log_unit_error_errno(u, r, "Attaching custom egress BPF program to cgroup %s failed: %m", path);
 
                 /* Remember that these BPF programs are installed now. */
-                r = set_ensure_put(set_installed, &filter_prog_hash_ops, prog);
+                r = set_ensure_put(set_installed, &bpf_program_hash_ops, prog);
                 if (r < 0)
                         return log_unit_error_errno(u, r, "Can't add program to BPF program set: %m");
+
                 bpf_program_ref(prog);
         }
 
@@ -668,6 +667,7 @@ static int attach_custom_bpf_progs(Unit *u, const char *path, int attach_type, S
 }
 
 int bpf_firewall_install(Unit *u) {
+        _cleanup_(bpf_program_unrefp) BPFProgram *ip_bpf_ingress_uninstall = NULL, *ip_bpf_egress_uninstall = NULL;
         _cleanup_free_ char *path = NULL;
         CGroupContext *cc;
         int r, supported;
@@ -698,17 +698,25 @@ int bpf_firewall_install(Unit *u) {
         if (r < 0)
                 return log_unit_error_errno(u, r, "Failed to determine cgroup path: %m");
 
-        flags = (supported == BPF_FIREWALL_SUPPORTED_WITH_MULTI &&
-                 (u->type == UNIT_SLICE || unit_cgroup_delegate(u))) ? BPF_F_ALLOW_MULTI : 0;
+        flags = supported == BPF_FIREWALL_SUPPORTED_WITH_MULTI ? BPF_F_ALLOW_MULTI : 0;
 
-        /* Unref the old BPF program (which will implicitly detach it) right before attaching the new program, to
-         * minimize the time window when we don't account for IP traffic. */
-        u->ip_bpf_egress_installed = bpf_program_unref(u->ip_bpf_egress_installed);
-        u->ip_bpf_ingress_installed = bpf_program_unref(u->ip_bpf_ingress_installed);
+        if (FLAGS_SET(flags, BPF_F_ALLOW_MULTI)) {
+                /* If we have BPF_F_ALLOW_MULTI, then let's clear the fields, but destroy the programs only
+                 * after attaching the new programs, so that there's no time window where neither program is
+                 * attached. (There will be a program where both are attached, but that's OK, since this is a
+                 * security feature where we rather want to lock down too much than too little */
+                ip_bpf_egress_uninstall = TAKE_PTR(u->ip_bpf_egress_installed);
+                ip_bpf_ingress_uninstall = TAKE_PTR(u->ip_bpf_ingress_installed);
+        } else {
+                /* If we don't have BPF_F_ALLOW_MULTI then unref the old BPF programs (which will implicitly
+                 * detach them) right before attaching the new program, to minimize the time window when we
+                 * don't account for IP traffic. */
+                u->ip_bpf_egress_installed = bpf_program_unref(u->ip_bpf_egress_installed);
+                u->ip_bpf_ingress_installed = bpf_program_unref(u->ip_bpf_ingress_installed);
+        }
 
         if (u->ip_bpf_egress) {
-                r = bpf_program_cgroup_attach(u->ip_bpf_egress, BPF_CGROUP_INET_EGRESS, path,
-                                              flags | (set_isempty(u->ip_bpf_custom_egress) ? 0 : BPF_F_ALLOW_MULTI));
+                r = bpf_program_cgroup_attach(u->ip_bpf_egress, BPF_CGROUP_INET_EGRESS, path, flags);
                 if (r < 0)
                         return log_unit_error_errno(u, r, "Attaching egress BPF program to cgroup %s failed: %m", path);
 
@@ -717,13 +725,16 @@ int bpf_firewall_install(Unit *u) {
         }
 
         if (u->ip_bpf_ingress) {
-                r = bpf_program_cgroup_attach(u->ip_bpf_ingress, BPF_CGROUP_INET_INGRESS, path,
-                                              flags | (set_isempty(u->ip_bpf_custom_ingress) ? 0 : BPF_F_ALLOW_MULTI));
+                r = bpf_program_cgroup_attach(u->ip_bpf_ingress, BPF_CGROUP_INET_INGRESS, path, flags);
                 if (r < 0)
                         return log_unit_error_errno(u, r, "Attaching ingress BPF program to cgroup %s failed: %m", path);
 
                 u->ip_bpf_ingress_installed = bpf_program_ref(u->ip_bpf_ingress);
         }
+
+        /* And now, definitely get rid of the old programs, and detach them */
+        ip_bpf_egress_uninstall = bpf_program_unref(ip_bpf_egress_uninstall);
+        ip_bpf_ingress_uninstall = bpf_program_unref(ip_bpf_ingress_uninstall);
 
         r = attach_custom_bpf_progs(u, path, BPF_CGROUP_INET_EGRESS, &u->ip_bpf_custom_egress, &u->ip_bpf_custom_egress_installed);
         if (r < 0)
@@ -904,4 +915,26 @@ void emit_bpf_firewall_warning(Unit *u) {
                                                     "the local system does not support BPF/cgroup firewalling");
                 warned = true;
         }
+}
+
+void bpf_firewall_close(Unit *u) {
+        assert(u);
+
+        u->ip_accounting_ingress_map_fd = safe_close(u->ip_accounting_ingress_map_fd);
+        u->ip_accounting_egress_map_fd = safe_close(u->ip_accounting_egress_map_fd);
+
+        u->ipv4_allow_map_fd = safe_close(u->ipv4_allow_map_fd);
+        u->ipv6_allow_map_fd = safe_close(u->ipv6_allow_map_fd);
+        u->ipv4_deny_map_fd = safe_close(u->ipv4_deny_map_fd);
+        u->ipv6_deny_map_fd = safe_close(u->ipv6_deny_map_fd);
+
+        u->ip_bpf_ingress = bpf_program_unref(u->ip_bpf_ingress);
+        u->ip_bpf_ingress_installed = bpf_program_unref(u->ip_bpf_ingress_installed);
+        u->ip_bpf_egress = bpf_program_unref(u->ip_bpf_egress);
+        u->ip_bpf_egress_installed = bpf_program_unref(u->ip_bpf_egress_installed);
+
+        u->ip_bpf_custom_ingress = set_free(u->ip_bpf_custom_ingress);
+        u->ip_bpf_custom_egress = set_free(u->ip_bpf_custom_egress);
+        u->ip_bpf_custom_ingress_installed = set_free(u->ip_bpf_custom_ingress_installed);
+        u->ip_bpf_custom_egress_installed = set_free(u->ip_bpf_custom_egress_installed);
 }

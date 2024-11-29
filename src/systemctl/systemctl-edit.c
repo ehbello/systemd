@@ -526,6 +526,8 @@ int edit(int argc, char *argv[], void *userdata) {
         r = expand_unit_names(bus, strv_skip(argv, 1), NULL, &names, NULL);
         if (r < 0)
                 return log_error_errno(r, "Failed to expand names: %m");
+        if (strv_isempty(names))
+                return log_error_errno(SYNTHETIC_ERRNO(ENOENT), "No units matched the specified patterns.");
 
         STRV_FOREACH(tmp, names) {
                 r = unit_is_masked(bus, &lp, *tmp);
@@ -576,7 +578,7 @@ end:
 
                 /* Removing empty dropin dirs */
                 if (!arg_full) {
-                        _cleanup_free_ char *dir;
+                        _cleanup_free_ char *dir = NULL;
 
                         dir = dirname_malloc(*original);
                         if (!dir)

@@ -775,7 +775,7 @@ _public_ int sd_get_sessions(char ***sessions) {
 }
 
 _public_ int sd_get_uids(uid_t **users) {
-        _cleanup_closedir_ DIR *d;
+        _cleanup_closedir_ DIR *d = NULL;
         struct dirent *de;
         int r = 0;
         unsigned n = 0;
@@ -794,8 +794,6 @@ _public_ int sd_get_uids(uid_t **users) {
         FOREACH_DIRENT_ALL(de, d, return -errno) {
                 int k;
                 uid_t uid;
-
-                dirent_ensure_type(d, de);
 
                 if (!dirent_is_file(de))
                         continue;

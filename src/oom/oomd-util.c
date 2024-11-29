@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include "fd-util.h"
+#include "fileio.h"
 #include "format-util.h"
 #include "oomd-util.h"
 #include "parse-util.h"
@@ -82,17 +83,17 @@ int oomd_pressure_above(Hashmap *h, usec_t duration, Set **ret) {
                 if (ctx->memory_pressure.avg10 > ctx->mem_pressure_limit) {
                         usec_t diff;
 
-                        if (ctx->last_hit_mem_pressure_limit == 0)
-                                ctx->last_hit_mem_pressure_limit = now(CLOCK_MONOTONIC);
+                        if (ctx->mem_pressure_limit_hit_start == 0)
+                                ctx->mem_pressure_limit_hit_start = now(CLOCK_MONOTONIC);
 
-                        diff = now(CLOCK_MONOTONIC) - ctx->last_hit_mem_pressure_limit;
+                        diff = now(CLOCK_MONOTONIC) - ctx->mem_pressure_limit_hit_start;
                         if (diff >= duration) {
                                 r = set_put(targets, ctx);
                                 if (r < 0)
                                         return -ENOMEM;
                         }
                 } else
-                        ctx->last_hit_mem_pressure_limit = 0;
+                        ctx->mem_pressure_limit_hit_start = 0;
         }
 
         if (!set_isempty(targets)) {
@@ -104,34 +105,31 @@ int oomd_pressure_above(Hashmap *h, usec_t duration, Set **ret) {
         return 0;
 }
 
-bool oomd_memory_reclaim(Hashmap *h) {
-        uint64_t pgscan = 0, pgscan_of = 0, last_pgscan = 0, last_pgscan_of = 0;
-        OomdCGroupContext *ctx;
+uint64_t oomd_pgscan_rate(const OomdCGroupContext *c) {
+        uint64_t last_pgscan;
 
-        assert(h);
+        assert(c);
 
-        /* If sum of all the current pgscan values are greater than the sum of all the last_pgscan values,
-         * there was reclaim activity. Used along with pressure checks to decide whether to take action. */
-
-        HASHMAP_FOREACH(ctx, h) {
-                uint64_t sum;
-
-                sum = pgscan + ctx->pgscan;
-                if (sum < pgscan || sum < ctx->pgscan)
-                        pgscan_of++; /* count overflows */
-                pgscan = sum;
-
-                sum = last_pgscan + ctx->last_pgscan;
-                if (sum < last_pgscan || sum < ctx->last_pgscan)
-                        last_pgscan_of++; /* count overflows */
-                last_pgscan = sum;
+        /* If last_pgscan > pgscan, assume the cgroup was recreated and reset last_pgscan to zero.
+         * pgscan is monotonic and in practice should not decrease (except in the recreation case). */
+        last_pgscan = c->last_pgscan;
+        if (c->last_pgscan > c->pgscan) {
+                log_debug("Last pgscan %"PRIu64" greater than current pgscan %"PRIu64" for %s. Using last pgscan of zero.",
+                                c->last_pgscan, c->pgscan, c->path);
+                last_pgscan = 0;
         }
 
-        /* overflow counts are the same, return sums comparison */
-        if (last_pgscan_of == pgscan_of)
-                return pgscan > last_pgscan;
+        return c->pgscan - last_pgscan;
+}
 
-        return pgscan_of > last_pgscan_of;
+bool oomd_mem_free_below(const OomdSystemContext *ctx, int threshold_permyriad) {
+        uint64_t mem_threshold;
+
+        assert(ctx);
+        assert(threshold_permyriad <= 10000);
+
+        mem_threshold = ctx->mem_total * threshold_permyriad / (uint64_t) 10000;
+        return LESS_BY(ctx->mem_total, ctx->mem_used) < mem_threshold;
 }
 
 bool oomd_swap_free_below(const OomdSystemContext *ctx, int threshold_permyriad) {
@@ -246,7 +244,7 @@ int oomd_kill_by_pgscan_rate(Hashmap *h, const char *prefix, bool dry_run, char 
         return ret;
 }
 
-int oomd_kill_by_swap_usage(Hashmap *h, bool dry_run, char **ret_selected) {
+int oomd_kill_by_swap_usage(Hashmap *h, uint64_t threshold_usage, bool dry_run, char **ret_selected) {
         _cleanup_free_ OomdCGroupContext **sorted = NULL;
         int n, r, ret = 0;
 
@@ -257,12 +255,12 @@ int oomd_kill_by_swap_usage(Hashmap *h, bool dry_run, char **ret_selected) {
         if (n < 0)
                 return n;
 
-        /* Try to kill cgroups with non-zero swap usage until we either succeed in
-         * killing or we get to a cgroup with no swap usage. */
+        /* Try to kill cgroups with non-zero swap usage until we either succeed in killing or we get to a cgroup with
+         * no swap usage. Threshold killing only cgroups with more than threshold swap usage. */
         for (int i = 0; i < n; i++) {
-                /* Skip over cgroups with no resource usage.
-                 * Continue break since there might be "avoid" cgroups at the end. */
-                if (sorted[i]->swap_usage == 0)
+                /* Skip over cgroups with not enough swap usage. Don't break since there might be "avoid"
+                 * cgroups at the end. */
+                if (sorted[i]->swap_usage <= threshold_usage)
                         continue;
 
                 r = oomd_cgroup_kill(sorted[i]->path, true, dry_run);
@@ -346,7 +344,11 @@ int oomd_cgroup_context_acquire(const char *path, OomdCGroupContext **ret) {
                         return log_debug_errno(r, "Error getting memory.low from %s: %m", path);
 
                 r = cg_get_attribute_as_uint64(SYSTEMD_CGROUP_CONTROLLER, path, "memory.swap.current", &ctx->swap_usage);
-                if (r < 0)
+                if (r == -ENODATA)
+                        /* The kernel can be compiled without support for memory.swap.* files,
+                         * or it can be disabled with boot param 'swapaccount=0' */
+                        log_once(LOG_WARNING, "No kernel support for memory.swap.current from %s (try boot param swapaccount=1), ignoring.", path);
+                else if (r < 0)
                         return log_debug_errno(r, "Error getting memory.swap.current from %s: %m", path);
 
                 r = cg_get_keyed_attribute(SYSTEMD_CGROUP_CONTROLLER, path, "memory.stat", STRV_MAKE("pgscan"), &val);
@@ -366,45 +368,77 @@ int oomd_cgroup_context_acquire(const char *path, OomdCGroupContext **ret) {
         return 0;
 }
 
-int oomd_system_context_acquire(const char *proc_swaps_path, OomdSystemContext *ret) {
+int oomd_system_context_acquire(const char *proc_meminfo_path, OomdSystemContext *ret) {
         _cleanup_fclose_ FILE *f = NULL;
+        unsigned field_filled = 0;
         OomdSystemContext ctx = {};
+        uint64_t mem_free, swap_free;
         int r;
 
-        assert(proc_swaps_path);
+        enum {
+                MEM_TOTAL = 1U << 0,
+                MEM_FREE = 1U << 1,
+                SWAP_TOTAL = 1U << 2,
+                SWAP_FREE = 1U << 3,
+                ALL = MEM_TOTAL|MEM_FREE|SWAP_TOTAL|SWAP_FREE,
+        };
+
+        assert(proc_meminfo_path);
         assert(ret);
 
-        f = fopen(proc_swaps_path, "re");
+        f = fopen(proc_meminfo_path, "re");
         if (!f)
                 return -errno;
 
-        (void) fscanf(f, "%*s %*s %*s %*s %*s\n");
-
         for (;;) {
-                uint64_t total, used;
+                _cleanup_free_ char *line = NULL;
+                char *word;
 
-                r = fscanf(f,
-                           "%*s "          /* device/file */
-                           "%*s "          /* type of swap */
-                           "%" PRIu64 " "  /* swap size */
-                           "%" PRIu64 " "  /* used */
-                           "%*s\n",        /* priority */
-                           &total, &used);
+                r = read_line(f, LONG_LINE_MAX, &line);
+                if (r < 0)
+                        return r;
+                if (r == 0)
+                        return -EINVAL;
 
-                if (r == EOF && feof(f))
-                         break;
+                if ((word = startswith(line, "MemTotal:"))) {
+                        field_filled |= MEM_TOTAL;
+                        r = convert_meminfo_value_to_uint64_bytes(word, &ctx.mem_total);
+                } else if ((word = startswith(line, "MemFree:"))) {
+                        field_filled |= MEM_FREE;
+                        r = convert_meminfo_value_to_uint64_bytes(word, &mem_free);
+                } else if ((word = startswith(line, "SwapTotal:"))) {
+                        field_filled |= SWAP_TOTAL;
+                        r = convert_meminfo_value_to_uint64_bytes(word, &ctx.swap_total);
+                } else if ((word = startswith(line, "SwapFree:"))) {
+                        field_filled |= SWAP_FREE;
+                        r = convert_meminfo_value_to_uint64_bytes(word, &swap_free);
+                } else
+                        continue;
 
-                if (r != 2) {
-                        if (ferror(f))
-                                return log_debug_errno(errno, "Error reading from %s: %m", proc_swaps_path);
+                if (r < 0)
+                        return log_debug_errno(r, "Error converting '%s' from %s to uint64_t: %m", line, proc_meminfo_path);
 
-                        return log_debug_errno(SYNTHETIC_ERRNO(EIO),
-                                               "Failed to parse values from %s: %m", proc_swaps_path);
-                }
-
-                ctx.swap_total += total * 1024U;
-                ctx.swap_used += used * 1024U;
+                if (field_filled == ALL)
+                        break;
         }
+
+        if (field_filled != ALL)
+                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "%s is missing expected fields", proc_meminfo_path);
+
+        if (mem_free > ctx.mem_total)
+                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL),
+                                       "MemFree (%" PRIu64 ") cannot be greater than MemTotal (%" PRIu64 ") %m",
+                                       mem_free,
+                                       ctx.mem_total);
+
+        if (swap_free > ctx.swap_total)
+                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL),
+                                       "SwapFree (%" PRIu64 ") cannot be greater than SwapTotal (%" PRIu64 ") %m",
+                                       swap_free,
+                                       ctx.swap_total);
+
+        ctx.mem_used = ctx.mem_total - mem_free;
+        ctx.swap_used = ctx.swap_total - swap_free;
 
         *ret = ctx;
         return 0;
@@ -430,8 +464,12 @@ int oomd_insert_cgroup_context(Hashmap *old_h, Hashmap *new_h, const char *path)
         if (old_ctx) {
                 curr_ctx->last_pgscan = old_ctx->pgscan;
                 curr_ctx->mem_pressure_limit = old_ctx->mem_pressure_limit;
-                curr_ctx->last_hit_mem_pressure_limit = old_ctx->last_hit_mem_pressure_limit;
+                curr_ctx->mem_pressure_limit_hit_start = old_ctx->mem_pressure_limit_hit_start;
+                curr_ctx->last_had_mem_reclaim = old_ctx->last_had_mem_reclaim;
         }
+
+        if (oomd_pgscan_rate(curr_ctx) > 0)
+                curr_ctx->last_had_mem_reclaim = now(CLOCK_MONOTONIC);
 
         r = hashmap_put(new_h, curr_ctx->path, curr_ctx);
         if (r < 0)
@@ -456,7 +494,11 @@ void oomd_update_cgroup_contexts_between_hashmaps(Hashmap *old_h, Hashmap *curr_
 
                 ctx->last_pgscan = old_ctx->pgscan;
                 ctx->mem_pressure_limit = old_ctx->mem_pressure_limit;
-                ctx->last_hit_mem_pressure_limit = old_ctx->last_hit_mem_pressure_limit;
+                ctx->mem_pressure_limit_hit_start = old_ctx->mem_pressure_limit_hit_start;
+                ctx->last_had_mem_reclaim = old_ctx->last_had_mem_reclaim;
+
+                if (oomd_pgscan_rate(ctx) > 0)
+                        ctx->last_had_mem_reclaim = now(CLOCK_MONOTONIC);
         }
 }
 
@@ -514,14 +556,19 @@ void oomd_dump_memory_pressure_cgroup_context(const OomdCGroupContext *ctx, FILE
 }
 
 void oomd_dump_system_context(const OomdSystemContext *ctx, FILE *f, const char *prefix) {
-        char used[FORMAT_BYTES_MAX], total[FORMAT_BYTES_MAX];
+        char mem_used[FORMAT_BYTES_MAX], mem_total[FORMAT_BYTES_MAX];
+        char swap_used[FORMAT_BYTES_MAX], swap_total[FORMAT_BYTES_MAX];
 
         assert(ctx);
         assert(f);
 
         fprintf(f,
+                "%sMemory: Used: %s Total: %s\n"
                 "%sSwap: Used: %s Total: %s\n",
                 strempty(prefix),
-                format_bytes(used, sizeof(used), ctx->swap_used),
-                format_bytes(total, sizeof(total), ctx->swap_total));
+                format_bytes(mem_used, sizeof(mem_used), ctx->mem_used),
+                format_bytes(mem_total, sizeof(mem_total), ctx->mem_total),
+                strempty(prefix),
+                format_bytes(swap_used, sizeof(swap_used), ctx->swap_used),
+                format_bytes(swap_total, sizeof(swap_total), ctx->swap_total));
 }

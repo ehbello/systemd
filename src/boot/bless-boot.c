@@ -126,7 +126,7 @@ static int acquire_path(void) {
         strv_free_and_replace(arg_path, a);
 
         if (DEBUG_LOGGING) {
-                _cleanup_free_ char *j;
+                _cleanup_free_ char *j = NULL;
 
                 j = strv_join(arg_path, ":");
                 log_debug("Using %s as boot loader drop-in search path.", j);
@@ -212,7 +212,7 @@ static int acquire_boot_count_path(
         uint64_t left, done;
         int r;
 
-        r = efi_get_variable_string(EFI_VENDOR_LOADER, "LoaderBootCountPath", &path);
+        r = efi_get_variable_string(EFI_LOADER_VARIABLE(LoaderBootCountPath), &path);
         if (r == -ENOENT)
                 return -EUNATCH; /* in this case, let the caller print a message */
         if (r < 0)

@@ -25,11 +25,13 @@ hwdb_files_test = files('''
         60-evdev.hwdb
         60-input-id.hwdb
         60-keyboard.hwdb
+        60-seat.hwdb
         60-sensor.hwdb
         70-joystick.hwdb
         70-mouse.hwdb
         70-pointingstick.hwdb
         70-touchpad.hwdb
+        80-ieee1394-unit-function.hwdb
 '''.split())
 
 if conf.get('ENABLE_HWDB') == 1
@@ -50,8 +52,7 @@ if conf.get('ENABLE_HWDB') == 1
                                          mkdir_p.format(join_paths(sysconfdir, 'udev/hwdb.d')))
 
                 meson.add_install_script('sh', '-c',
-                                         'test -n "$DESTDIR" || @0@/systemd-hwdb update'
-                                         .format(rootbindir))
+                                         'test -n "$DESTDIR" || @0@/systemd-hwdb update'.format(rootbindir))
         endif
 
         if want_tests != 'false'

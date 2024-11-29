@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include <malloc.h>
 #include <sys/poll.h>
 
 #include "alloc-util.h"
@@ -113,13 +114,11 @@ struct Varlink {
         int fd;
 
         char *input_buffer; /* valid data starts at input_buffer_index, ends at input_buffer_index+input_buffer_size */
-        size_t input_buffer_allocated;
         size_t input_buffer_index;
         size_t input_buffer_size;
         size_t input_buffer_unscanned;
 
         char *output_buffer; /* valid data starts at output_buffer_index, ends at output_buffer_index+output_buffer_size */
-        size_t output_buffer_allocated;
         size_t output_buffer_index;
         size_t output_buffer_size;
 
@@ -222,11 +221,11 @@ DEFINE_PRIVATE_STRING_TABLE_LOOKUP_TO_STRING(varlink_state, VarlinkState);
         log_debug("%s: " fmt, varlink_server_description(s), ##__VA_ARGS__)
 
 static inline const char *varlink_description(Varlink *v) {
-        return strna(v ? v->description : NULL);
+        return (v ? v->description : NULL) ?: "varlink";
 }
 
 static inline const char *varlink_server_description(VarlinkServer *s) {
-        return strna(s ? s->description : NULL);
+        return (s ? s->description : NULL) ?: "varlink";
 }
 
 static void varlink_set_state(Varlink *v, VarlinkState state) {
@@ -234,10 +233,10 @@ static void varlink_set_state(Varlink *v, VarlinkState state) {
         assert(state >= 0 && state < _VARLINK_STATE_MAX);
 
         if (v->state < 0)
-                varlink_log(v, "varlink: setting state %s",
+                varlink_log(v, "Setting state %s",
                             varlink_state_to_string(state));
         else
-                varlink_log(v, "varlink: changing state %s → %s",
+                varlink_log(v, "Changing state %s → %s",
                             varlink_state_to_string(v->state),
                             varlink_state_to_string(state));
 
@@ -448,13 +447,16 @@ static int varlink_write(Varlink *v) {
         assert(v->fd >= 0);
 
         /* We generally prefer recv()/send() (mostly because of MSG_NOSIGNAL) but also want to be compatible
-         * with non-socket IO, hence fall back automatically */
-        if (!v->prefer_read_write) {
+         * with non-socket IO, hence fall back automatically.
+         *
+         * Use a local variable to help gcc figure out that we set 'n' in all cases. */
+        bool prefer_write = v->prefer_read_write;
+        if (!prefer_write) {
                 n = send(v->fd, v->output_buffer + v->output_buffer_index, v->output_buffer_size, MSG_DONTWAIT|MSG_NOSIGNAL);
                 if (n < 0 && errno == ENOTSOCK)
-                        v->prefer_read_write = true;
+                        prefer_write = v->prefer_read_write = true;
         }
-        if (v->prefer_read_write)
+        if (prefer_write)
                 n = write(v->fd, v->output_buffer + v->output_buffer_index, v->output_buffer_size);
         if (n < 0) {
                 if (errno == EAGAIN)
@@ -503,14 +505,14 @@ static int varlink_read(Varlink *v) {
 
         assert(v->fd >= 0);
 
-        if (v->input_buffer_allocated <= v->input_buffer_index + v->input_buffer_size) {
+        if (MALLOC_SIZEOF_SAFE(v->input_buffer) <= v->input_buffer_index + v->input_buffer_size) {
                 size_t add;
 
                 add = MIN(VARLINK_BUFFER_MAX - v->input_buffer_size, VARLINK_READ_SIZE);
 
                 if (v->input_buffer_index == 0) {
 
-                        if (!GREEDY_REALLOC(v->input_buffer, v->input_buffer_allocated, v->input_buffer_size + add))
+                        if (!GREEDY_REALLOC(v->input_buffer, v->input_buffer_size + add))
                                 return -ENOMEM;
 
                 } else {
@@ -523,20 +525,19 @@ static int varlink_read(Varlink *v) {
                         memcpy(b, v->input_buffer + v->input_buffer_index, v->input_buffer_size);
 
                         free_and_replace(v->input_buffer, b);
-
-                        v->input_buffer_allocated = v->input_buffer_size + add;
                         v->input_buffer_index = 0;
                 }
         }
 
-        rs = v->input_buffer_allocated - (v->input_buffer_index + v->input_buffer_size);
+        rs = MALLOC_SIZEOF_SAFE(v->input_buffer) - (v->input_buffer_index + v->input_buffer_size);
 
-        if (!v->prefer_read_write) {
+        bool prefer_read = v->prefer_read_write;
+        if (!prefer_read) {
                 n = recv(v->fd, v->input_buffer + v->input_buffer_index + v->input_buffer_size, rs, MSG_DONTWAIT);
                 if (n < 0 && errno == ENOTSOCK)
-                        v->prefer_read_write = true;
+                        prefer_read = v->prefer_read_write = true;
         }
-        if (v->prefer_read_write)
+        if (prefer_read)
                 n = read(v->fd, v->input_buffer + v->input_buffer_index + v->input_buffer_size, rs);
         if (n < 0) {
                 if (errno == EAGAIN)
@@ -573,7 +574,7 @@ static int varlink_parse_message(Varlink *v) {
                 return 0;
 
         assert(v->input_buffer_unscanned <= v->input_buffer_size);
-        assert(v->input_buffer_index + v->input_buffer_size <= v->input_buffer_allocated);
+        assert(v->input_buffer_index + v->input_buffer_size <= MALLOC_SIZEOF_SAFE(v->input_buffer));
 
         begin = v->input_buffer + v->input_buffer_index;
 
@@ -1206,9 +1207,8 @@ int varlink_close(Varlink *v) {
 
         varlink_set_state(v, VARLINK_DISCONNECTED);
 
-        /* Let's take a reference first, since varlink_detach_server() might drop the final ref from the
-         * disconnect callback, which would invalidate the pointer we are holding before we can call
-         * varlink_clear(). */
+        /* Let's take a reference first, since varlink_detach_server() might drop the final (dangling) ref
+         * which would destroy us before we can call varlink_clear() */
         varlink_ref(v);
         varlink_detach_server(v);
         varlink_clear(v);
@@ -1221,32 +1221,15 @@ Varlink* varlink_close_unref(Varlink *v) {
         if (!v)
                 return NULL;
 
-        /* A reference is given to us to be destroyed. But when calling varlink_close(), a callback might
-         * also drop a reference. We allow this, and will hold a temporary reference to the object to make
-         * sure that the object still exists when control returns to us. If there's just one reference
-         * remaining after varlink_close(), even though there were at least two right before, we'll handle
-         * that gracefully instead of crashing.
-         *
-         * In other words, this call drops the donated reference, but if the internal call to varlink_close()
-         * dropped a reference to, we don't drop the reference afain. This allows the caller to say:
-         *     global_object->varlink = varlink_close_unref(global_object->varlink);
-         * even though there is some callback which has access to global_object and may drop the reference
-         * stored in global_object->varlink. Without this step, the same code would have to be written as:
-         *     Varlink *t = TAKE_PTR(global_object->varlink);
-         *     varlink_close_unref(t);
-         */
-                                   /* n_ref >= 1 */
-        varlink_ref(v);            /* n_ref >= 2 */
-        varlink_close(v);          /* n_ref >= 1 */
-        if (v->n_ref > 1)
-                v->n_ref--;        /* n_ref >= 1 */
+        (void) varlink_close(v);
         return varlink_unref(v);
 }
 
 Varlink* varlink_flush_close_unref(Varlink *v) {
-        if (v)
-                varlink_flush(v);
+        if (!v)
+                return NULL;
 
+        (void) varlink_flush(v);
         return varlink_close_unref(v);
 }
 
@@ -1271,12 +1254,12 @@ static int varlink_enqueue_json(Varlink *v, JsonVariant *m) {
 
                 free_and_replace(v->output_buffer, text);
 
-                v->output_buffer_size = v->output_buffer_allocated = r + 1;
+                v->output_buffer_size = r + 1;
                 v->output_buffer_index = 0;
 
         } else if (v->output_buffer_index == 0) {
 
-                if (!GREEDY_REALLOC(v->output_buffer, v->output_buffer_allocated, v->output_buffer_size + r + 1))
+                if (!GREEDY_REALLOC(v->output_buffer, v->output_buffer_size + r + 1))
                         return -ENOMEM;
 
                 memcpy(v->output_buffer + v->output_buffer_size, text, r + 1);
@@ -1293,7 +1276,7 @@ static int varlink_enqueue_json(Varlink *v, JsonVariant *m) {
                 memcpy(mempcpy(n, v->output_buffer + v->output_buffer_index, v->output_buffer_size), text, r + 1);
 
                 free_and_replace(v->output_buffer, n);
-                v->output_buffer_allocated = v->output_buffer_size = new_size;
+                v->output_buffer_size = new_size;
                 v->output_buffer_index = 0;
         }
 

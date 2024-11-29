@@ -84,7 +84,7 @@ static void unmount_autofs(Automount *a) {
         if (a->pipe_fd < 0)
                 return;
 
-        a->pipe_event_source = sd_event_source_unref(a->pipe_event_source);
+        a->pipe_event_source = sd_event_source_disable_unref(a->pipe_event_source);
         a->pipe_fd = safe_close(a->pipe_fd);
 
         /* If we reload/reexecute things we keep the mount point around */
@@ -113,7 +113,7 @@ static void automount_done(Unit *u) {
         a->tokens = set_free(a->tokens);
         a->expire_tokens = set_free(a->expire_tokens);
 
-        a->expire_event_source = sd_event_source_unref(a->expire_event_source);
+        a->expire_event_source = sd_event_source_disable_unref(a->expire_event_source);
 }
 
 static int automount_add_trigger_dependencies(Automount *a) {
@@ -199,7 +199,7 @@ static int automount_set_where(Automount *a) {
         if (r < 0)
                 return r;
 
-        path_simplify(a->where, false);
+        path_simplify(a->where);
         return 1;
 }
 
@@ -651,7 +651,7 @@ fail:
 
 static void *expire_thread(void *p) {
         struct autofs_dev_ioctl param;
-        _cleanup_(expire_data_freep) struct expire_data *data = (struct expire_data*)p;
+        _cleanup_(expire_data_freep) struct expire_data *data = p;
         int r;
 
         assert(data->dev_autofs_fd >= 0);
@@ -1087,6 +1087,7 @@ const UnitVTable automount_vtable = {
         .can_transient = true,
         .can_fail = true,
         .can_trigger = true,
+        .exclude_from_switch_root_serialization = true,
 
         .init = automount_init,
         .load = automount_load,

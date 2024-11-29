@@ -11,7 +11,7 @@ test_hashmap_ordered_c = custom_target(
 
 test_include_dir = include_directories('.')
 
-path = run_command('sh', ['-c', 'echo "$PATH"']).stdout().strip()
+path = run_command(sh, '-c', 'echo "$PATH"').stdout().strip()
 test_env = environment()
 test_env.set('SYSTEMD_KBD_MODEL_MAP', kbd_model_map)
 test_env.set('SYSTEMD_LANGUAGE_FALLBACK_MAP', language_fallback_map)
@@ -133,7 +133,20 @@ tests += [
 
         [['src/test/test-serialize.c']],
 
+        [['src/test/test-unit-serialize.c'],
+         [libcore,
+          libshared],
+         [threads,
+          librt,
+          libseccomp,
+          libselinux,
+          libmount,
+          libblkid],
+         core_includes],
+
         [['src/test/test-utf8.c']],
+
+        [['src/test/test-blockdev-util.c']],
 
         [['src/test/test-dev-setup.c']],
 
@@ -148,6 +161,8 @@ tests += [
 
         [['src/test/test-copy.c']],
 
+        [['src/test/test-data-fd-util.c']],
+
         [['src/test/test-static-destruct.c']],
 
         [['src/test/test-sigbus.c']],
@@ -158,7 +173,10 @@ tests += [
 
         [['src/test/test-fstab-util.c']],
 
-        [['src/test/test-random-util.c']],
+        [['src/test/test-random-util.c'],
+         [],
+         [libm],
+         [], '', 'timeout=120'],
 
         [['src/test/test-format-table.c']],
 
@@ -210,7 +228,7 @@ tests += [
         [['src/test/test-os-util.c']],
 
         [['src/test/test-libcrypt-util.c'],
-         [], [], [], '', 'timeout=120'],
+         [], [libcrypt], [], '', 'timeout=120'],
 
         [['src/test/test-escape.c']],
 
@@ -223,6 +241,8 @@ tests += [
         [['src/test/test-extract-word.c']],
 
         [['src/test/test-parse-argument.c']],
+
+        [['src/test/test-parse-socket-bind-item.c']],
 
         [['src/test/test-parse-util.c']],
 
@@ -321,6 +341,12 @@ tests += [
           libblkid],
          core_includes],
 
+        [['src/test/test-bpf-foreign-programs.c'],
+         [libcore,
+          libshared],
+         [],
+         core_includes],
+
         [['src/test/test-watch-pid.c'],
          [libcore,
           libshared],
@@ -345,6 +371,8 @@ tests += [
         [['src/test/test-set-disable-mempool.c'],
          [],
          [threads]],
+
+        [['src/test/test-hash-funcs.c']],
 
         [['src/test/test-bitmap.c']],
 
@@ -401,6 +429,8 @@ tests += [
         [['src/test/test-date.c']],
 
         [['src/test/test-sleep.c']],
+
+        [['src/test/test-tpm2.c']],
 
         [['src/test/test-replace-var.c']],
 
@@ -540,7 +570,16 @@ tests += [
         [['src/test/test-gcrypt-util.c'],
          [], [], [], 'HAVE_GCRYPT'],
 
-        [['src/test/test-nss.c'],
+        [['src/test/test-nss-hosts.c',
+          'src/test/nss-test-util.c',
+          'src/test/nss-test-util.h'],
+         [],
+         [libdl],
+         [], 'ENABLE_NSS', 'manual'],
+
+        [['src/test/test-nss-users.c',
+          'src/test/nss-test-util.c',
+          'src/test/nss-test-util.h'],
          [],
          [libdl],
          [], 'ENABLE_NSS', 'manual'],
@@ -581,4 +620,13 @@ tests += [
         [['src/libudev/test-udev-device-thread.c'],
          [libudev],
          [threads]],
+]
+
+tests += [
+         [['src/test/test-socket-bind.c'],
+          [libcore,
+          libshared],
+         [libdl],
+         core_includes,
+         'BPF_FRAMEWORK'],
 ]

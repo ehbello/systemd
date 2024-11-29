@@ -35,13 +35,14 @@ BuildPackages=
         libxkbcommon
         libxslt
         lz4
-        m4
         meson
         pam
         pkgconfig
         python
         python-lxml
+        python-jinja
         qrencode
+        rsync
         xz
         zstd
 
@@ -51,4 +52,3 @@ Packages=
         nano
         qrencode
         strace
-        vi

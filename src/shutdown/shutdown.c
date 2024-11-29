@@ -322,6 +322,9 @@ int main(int argc, char *argv[]) {
         log_set_prohibit_ipc(true);
         log_parse_environment();
 
+        if (getpid_cached() == 1)
+                log_set_always_reopen_console(true);
+
         r = parse_argv(argc, argv);
         if (r < 0)
                 goto error;
@@ -486,7 +489,7 @@ int main(int argc, char *argv[]) {
                 if (!changed && umount_log_level == LOG_INFO && !can_initrd) {
                         /* There are things we cannot get rid of. Loop one more time
                          * with LOG_ERR to inform the user. Note that we don't need
-                         * to do this if there is a initrd to switch to, because that
+                         * to do this if there is an initrd to switch to, because that
                          * one is likely to get rid of the remaining mounts. If not,
                          * it will log about them. */
                         umount_log_level = LOG_ERR;
@@ -556,8 +559,10 @@ int main(int argc, char *argv[]) {
                 sync_with_progress();
 
         if (streq(arg_verb, "exit")) {
-                if (in_container)
+                if (in_container) {
+                        log_info("Exiting container.");
                         return arg_exit_code;
+                }
 
                 cmd = RB_POWER_OFF; /* We cannot exit() on the host, fallback on another method. */
         }

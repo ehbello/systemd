@@ -14,6 +14,7 @@
 #include <sys/types.h>
 #include <sys/un.h>
 
+#include "errno-util.h"
 #include "macro.h"
 #include "missing_network.h"
 #include "missing_socket.h"
@@ -138,6 +139,7 @@ typedef enum {
         IFNAME_VALID_NUMERIC     = 1 << 1,
         _IFNAME_VALID_ALL        = IFNAME_VALID_ALTERNATIVE | IFNAME_VALID_NUMERIC,
 } IfnameValidFlags;
+bool ifname_valid_char(char a);
 bool ifname_valid_full(const char *p, IfnameValidFlags flags);
 static inline bool ifname_valid(const char *p) {
         return ifname_valid_full(p, 0);
@@ -264,7 +266,7 @@ static inline int getsockopt_int(int fd, int level, int optname, int *ret) {
         socklen_t sl = sizeof(v);
 
         if (getsockopt(fd, level, optname, &v, &sl) < 0)
-                return -errno;
+                return negative_errno();
         if (sl != sizeof(v))
                 return -EIO;
 

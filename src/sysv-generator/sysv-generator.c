@@ -137,7 +137,7 @@ static int generate_unit_file(SysvStub *s) {
                 path_escaped);
 
         if (s->description) {
-                _cleanup_free_ char *t;
+                _cleanup_free_ char *t = NULL;
 
                 t = specifier_escape(s->description);
                 if (!t)
@@ -165,7 +165,7 @@ static int generate_unit_file(SysvStub *s) {
                 yes_no(!s->pid_file));
 
         if (s->pid_file) {
-                _cleanup_free_ char *t;
+                _cleanup_free_ char *t = NULL;
 
                 t = specifier_escape(s->pid_file);
                 if (!t)
@@ -419,7 +419,7 @@ static int handle_dependencies(SysvStub *s, unsigned line, const char *full_text
 }
 
 static int load_sysv(SysvStub *s) {
-        _cleanup_fclose_ FILE *f;
+        _cleanup_fclose_ FILE *f = NULL;
         unsigned line = 0;
         int r;
         enum {
@@ -533,7 +533,7 @@ static int load_sysv(SysvStub *s) {
                          * continuation */
 
                         size_t k;
-                        char *j;
+                        const char *j;
 
                         k = strlen(t);
                         if (k > 0 && t[k-1] == '\\')
@@ -542,19 +542,8 @@ static int load_sysv(SysvStub *s) {
                                 state = NORMAL;
 
                         j = strstrip(t);
-                        if (!isempty(j)) {
-                                char *d = NULL;
-
-                                if (chkconfig_description)
-                                        d = strjoin(chkconfig_description, " ", j);
-                                else
-                                        d = strdup(j);
-                                if (!d)
-                                        return log_oom();
-
-                                free(chkconfig_description);
-                                chkconfig_description = d;
-                        }
+                        if (!isempty(j) && !strextend_with_separator(&chkconfig_description, " ", j))
+                                return log_oom();
 
                 } else if (IN_SET(state, LSB, LSB_DESCRIPTION)) {
 
@@ -604,20 +593,8 @@ static int load_sysv(SysvStub *s) {
                                         const char *j;
 
                                         j = strstrip(t);
-                                        if (!isempty(j)) {
-                                                char *d = NULL;
-
-                                                if (long_description)
-                                                        d = strjoin(long_description, " ", t);
-                                                else
-                                                        d = strdup(j);
-                                                if (!d)
-                                                        return log_oom();
-
-                                                free(long_description);
-                                                long_description = d;
-                                        }
-
+                                        if (!isempty(j) && !strextend_with_separator(&long_description, " ", j))
+                                                return log_oom();
                                 } else
                                         state = LSB;
                         }
