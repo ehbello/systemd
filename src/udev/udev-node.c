@@ -15,7 +15,6 @@
 #include "fd-util.h"
 #include "format-util.h"
 #include "fs-util.h"
-#include "libudev-util.h"
 #include "mkdir.h"
 #include "path-util.h"
 #include "selinux-util.h"
@@ -192,9 +191,43 @@ static int link_find_prioritized(sd_device *dev, bool add, const char *stackdir,
         return 0;
 }
 
+static size_t escape_path(const char *src, char *dest, size_t size) {
+        size_t i, j;
+
+        assert(src);
+        assert(dest);
+
+        for (i = 0, j = 0; src[i] != '\0'; i++) {
+                if (src[i] == '/') {
+                        if (j+4 >= size) {
+                                j = 0;
+                                break;
+                        }
+                        memcpy(&dest[j], "\\x2f", 4);
+                        j += 4;
+                } else if (src[i] == '\\') {
+                        if (j+4 >= size) {
+                                j = 0;
+                                break;
+                        }
+                        memcpy(&dest[j], "\\x5c", 4);
+                        j += 4;
+                } else {
+                        if (j+1 >= size) {
+                                j = 0;
+                                break;
+                        }
+                        dest[j] = src[i];
+                        j++;
+                }
+        }
+        dest[j] = '\0';
+        return j;
+}
+
 /* manage "stack of names" with possibly specified device priorities */
 static int link_update(sd_device *dev, const char *slink, bool add) {
-        _cleanup_free_ char *target = NULL, *filename = NULL, *dirname = NULL;
+        _cleanup_free_ char *filename = NULL, *dirname = NULL;
         char name_enc[PATH_MAX];
         const char *id_filename;
         int i, r, retries;
@@ -206,7 +239,7 @@ static int link_update(sd_device *dev, const char *slink, bool add) {
         if (r < 0)
                 return log_device_debug_errno(dev, r, "Failed to get id_filename: %m");
 
-        util_path_encode(slink + STRLEN("/dev"), name_enc, sizeof(name_enc));
+        escape_path(slink + STRLEN("/dev"), name_enc, sizeof(name_enc));
         dirname = path_join("/run/udev/links/", name_enc);
         if (!dirname)
                 return log_oom();
@@ -214,26 +247,30 @@ static int link_update(sd_device *dev, const char *slink, bool add) {
         if (!filename)
                 return log_oom();
 
-        if (!add && unlink(filename) == 0)
-                (void) rmdir(dirname);
-
-        if (add)
-                do {
+        if (!add) {
+                if (unlink(filename) == 0)
+                        (void) rmdir(dirname);
+        } else
+                for (;;) {
                         _cleanup_close_ int fd = -1;
 
                         r = mkdir_parents(filename, 0755);
                         if (!IN_SET(r, 0, -ENOENT))
-                                break;
+                                return r;
+
                         fd = open(filename, O_WRONLY|O_CREAT|O_CLOEXEC|O_TRUNC|O_NOFOLLOW, 0444);
-                        if (fd < 0)
-                                r = -errno;
-                } while (r == -ENOENT);
+                        if (fd >= 0)
+                                break;
+                        if (errno != ENOENT)
+                                return -errno;
+                }
 
         /* If the database entry is not written yet we will just do one iteration and possibly wrong symlink
          * will be fixed in the second invocation. */
         retries = sd_device_get_is_initialized(dev) > 0 ? LINK_UPDATE_MAX_RETRIES : 1;
 
         for (i = 0; i < retries; i++) {
+                _cleanup_free_ char *target = NULL;
                 struct stat st1 = {}, st2 = {};
 
                 r = stat(dirname, &st1);

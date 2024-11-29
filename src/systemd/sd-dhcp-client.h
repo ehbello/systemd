@@ -40,6 +40,8 @@ enum {
         SD_DHCP_CLIENT_EVENT_EXPIRED            = 3,
         SD_DHCP_CLIENT_EVENT_RENEW              = 4,
         SD_DHCP_CLIENT_EVENT_SELECTING          = 5,
+        SD_DHCP_CLIENT_EVENT_TRANSIENT_FAILURE  = 6, /* Sent when we have not received a reply after the first few attempts.
+                                                      * The client may want to start acquiring link-local addresses. */
 };
 
 enum {
@@ -179,7 +181,7 @@ int sd_dhcp_client_set_mud_url(
                 const char *mudurl);
 int sd_dhcp_client_set_user_class(
                 sd_dhcp_client *client,
-                const char* const *user_class);
+                char * const *user_class);
 int sd_dhcp_client_get_lease(
                 sd_dhcp_client *client,
                 sd_dhcp_lease **ret);

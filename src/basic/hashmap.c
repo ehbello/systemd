@@ -845,6 +845,16 @@ int _set_ensure_allocated(Set **s, const struct hash_ops *hash_ops  HASHMAP_DEBU
         return hashmap_base_ensure_allocated((HashmapBase**)s, hash_ops, HASHMAP_TYPE_SET  HASHMAP_DEBUG_PASS_ARGS);
 }
 
+int _hashmap_ensure_put(Hashmap **h, const struct hash_ops *hash_ops, const void *key, void *value  HASHMAP_DEBUG_PARAMS) {
+        int r;
+
+        r = _hashmap_ensure_allocated(h, hash_ops  HASHMAP_DEBUG_PASS_ARGS);
+        if (r < 0)
+                return r;
+
+        return hashmap_put(*h, key, value);
+}
+
 int _ordered_hashmap_ensure_put(OrderedHashmap **h, const struct hash_ops *hash_ops, const void *key, void *value  HASHMAP_DEBUG_PARAMS) {
         int r;
 
@@ -1975,4 +1985,86 @@ IteratedCache* iterated_cache_free(IteratedCache *cache) {
         }
 
         return mfree(cache);
+}
+
+int set_strjoin(Set *s, const char *separator, bool wrap_with_separator, char **ret) {
+        size_t separator_len, allocated = 0, len = 0;
+        _cleanup_free_ char *str = NULL;
+        const char *value;
+        bool first;
+
+        assert(ret);
+
+        if (set_isempty(s)) {
+                *ret = NULL;
+                return 0;
+        }
+
+        separator_len = strlen_ptr(separator);
+
+        if (separator_len == 0)
+                wrap_with_separator = false;
+
+        first = !wrap_with_separator;
+
+        SET_FOREACH(value, s) {
+                size_t l = strlen_ptr(value);
+
+                if (l == 0)
+                        continue;
+
+                if (!GREEDY_REALLOC(str, allocated, len + l + (first ? 0 : separator_len) + (wrap_with_separator ? separator_len : 0) + 1))
+                        return -ENOMEM;
+
+                if (separator_len > 0 && !first) {
+                        memcpy(str + len, separator, separator_len);
+                        len += separator_len;
+                }
+
+                memcpy(str + len, value, l);
+                len += l;
+                first = false;
+        }
+
+        if (wrap_with_separator) {
+                memcpy(str + len, separator, separator_len);
+                len += separator_len;
+        }
+
+        str[len] = '\0';
+
+        *ret = TAKE_PTR(str);
+        return 0;
+}
+
+bool set_equal(Set *a, Set *b) {
+        void *p;
+
+        /* Checks whether each entry of 'a' is also in 'b' and vice versa, i.e. the two sets contain the same
+         * entries */
+
+        if (a == b)
+                return true;
+
+        if (set_isempty(a) && set_isempty(b))
+                return true;
+
+        if (set_size(a) != set_size(b)) /* Cheap check that hopefully catches a lot of inequality cases
+                                         * already */
+                return false;
+
+        SET_FOREACH(p, a)
+                if (!set_contains(b, p))
+                        return false;
+
+        /* If we have the same hashops, then we don't need to check things backwards given we compared the
+         * size and that all of a is in b. */
+        if (a->b.hash_ops == b->b.hash_ops)
+                return true;
+
+        SET_FOREACH(p, b)
+                if (!set_contains(a, p))
+                        return false;
+
+        return true;
 }

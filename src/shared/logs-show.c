@@ -66,26 +66,17 @@ static int print_catalog(FILE *f, sd_journal *j) {
         else
                 prefix = "--";
 
-        if (colors_enabled())
-                newline = strjoina(ANSI_NORMAL "\n" ANSI_GREY, prefix, ANSI_NORMAL " " ANSI_GREEN);
-        else
-                newline = strjoina("\n", prefix, " ");
+        newline = strjoina(ansi_normal(), "\n", ansi_grey(), prefix, ansi_normal(), " ", ansi_green());
 
         z = strreplace(strstrip(t), "\n", newline);
         if (!z)
                 return log_oom();
 
-        if (colors_enabled())
-                fprintf(f, ANSI_GREY "%s" ANSI_NORMAL " " ANSI_GREEN, prefix);
-        else
-                fprintf(f, "%s ", prefix);
+        fprintf(f, "%s%s %s%s", ansi_grey(), prefix, ansi_normal(), ansi_green());
 
         fputs(z, f);
 
-        if (colors_enabled())
-                fputs(ANSI_NORMAL "\n", f);
-        else
-                fputc('\n', f);
+        fprintf(f, "%s\n", ansi_normal());
 
         return 1;
 }
@@ -702,9 +693,11 @@ static int output_verbose(
 
                 c = memchr(data, '=', length);
                 if (!c)
-                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                               "Invalid field.");
+                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid field.");
+
                 fieldlen = c - (const char*) data;
+                if (!journal_field_valid(data, fieldlen, true))
+                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid field.");
 
                 r = field_set_test(output_fields, data, fieldlen);
                 if (r < 0)
@@ -798,6 +791,7 @@ static int output_export(
                 sd_id128_to_string(boot_id, sid));
 
         JOURNAL_FOREACH_DATA_RETVAL(j, data, length, r) {
+                size_t fieldlen;
                 const char *c;
 
                 /* We already printed the boot id from the data in the header, hence let's suppress it here */
@@ -806,10 +800,13 @@ static int output_export(
 
                 c = memchr(data, '=', length);
                 if (!c)
-                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                               "Invalid field.");
+                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid field.");
 
-                r = field_set_test(output_fields, data, c - (const char *) data);
+                fieldlen = c - (const char*) data;
+                if (!journal_field_valid(data, fieldlen, true))
+                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid field.");
+
+                r = field_set_test(output_fields, data, fieldlen);
                 if (r < 0)
                         return r;
                 if (!r)
@@ -820,11 +817,11 @@ static int output_export(
                 else {
                         uint64_t le64;
 
-                        fwrite(data, c - (const char*) data, 1, f);
+                        fwrite(data, fieldlen, 1, f);
                         fputc('\n', f);
-                        le64 = htole64(length - (c - (const char*) data) - 1);
+                        le64 = htole64(length - fieldlen - 1);
                         fwrite(&le64, sizeof(le64), 1, f);
-                        fwrite(c + 1, length - (c - (const char*) data) - 1, 1, f);
+                        fwrite(c + 1, length - fieldlen - 1, 1, f);
                 }
 
                 fputc('\n', f);
@@ -961,6 +958,7 @@ static int update_json_data_split(
                 const void *data,
                 size_t size) {
 
+        size_t fieldlen;
         const char *eq;
         char *name;
 
@@ -974,14 +972,15 @@ static int update_json_data_split(
         if (!eq)
                 return 0;
 
-        if (eq == data)
-                return 0;
+        fieldlen = eq - (const char*) data;
+        if (!journal_field_valid(data, fieldlen, true))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid field.");
 
-        name = strndupa(data, eq - (const char*) data);
+        name = strndupa(data, fieldlen);
         if (output_fields && !set_contains(output_fields, name))
                 return 0;
 
-        return update_json_data(h, flags, name, eq + 1, size - (eq - (const char*) data) - 1);
+        return update_json_data(h, flags, name, eq + 1, size - fieldlen - 1);
 }
 
 static int output_json(
@@ -1324,7 +1323,7 @@ int show_journal(
         assert(mode >= 0);
         assert(mode < _OUTPUT_MODE_MAX);
 
-        if (how_many == (unsigned) -1)
+        if (how_many == UINT_MAX)
                 need_seek = true;
         else {
                 /* Seek to end */
@@ -1397,9 +1396,9 @@ int show_journal(
                         bool noaccess = journal_access_blocked(j);
 
                         if (line == 0 && noaccess)
-                                fprintf(f, "Warning: some journal files were not opened due to insufficient permissions.");
+                                fprintf(f, "Warning: some journal files were not opened due to insufficient permissions.\n");
                         else if (!noaccess)
-                                fprintf(f, "Warning: journal has been rotated since unit was started, output may be incomplete.\n");
+                                fprintf(f, "Notice: journal has been rotated since unit was started, output may be incomplete.\n");
                         else
                                 fprintf(f, "Warning: journal has been rotated since unit was started and some journal "
                                         "files were not opened due to insufficient permissions, output may be incomplete.\n");
@@ -1523,9 +1522,6 @@ static int get_boot_id_for_machine(const char *machine, sd_id128_t *boot_id) {
         assert(machine);
         assert(boot_id);
 
-        if (!machine_name_is_valid(machine))
-                return -EINVAL;
-
         r = container_get_leader(machine, &pid);
         if (r < 0)
                 return r;
@@ -1639,16 +1635,20 @@ int show_journal_by_unit(
         if (r < 0)
                 return log_error_errno(r, "Failed to open journal: %m");
 
-        r = add_match_this_boot(j, NULL);
-        if (r < 0)
-                return r;
-
         if (system_unit)
                 r = add_matches_for_unit(j, unit);
         else
                 r = add_matches_for_user_unit(j, unit, uid);
         if (r < 0)
                 return log_error_errno(r, "Failed to add unit matches: %m");
+
+        r = sd_journal_add_conjunction(j);
+        if (r < 0)
+                return log_error_errno(r, "Failed to add conjunction: %m");
+
+        r = add_match_this_boot(j, NULL);
+        if (r < 0)
+                return r;
 
         if (DEBUG_LOGGING) {
                 _cleanup_free_ char *filter;

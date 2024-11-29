@@ -8,14 +8,17 @@
 #include "fd-util.h"
 #include "fileio.h"
 #include "fs-util.h"
+#include "label.h"
 #include "missing_stat.h"
 #include "missing_syscall.h"
+#include "mkdir.h"
 #include "mountpoint-util.h"
 #include "parse-util.h"
 #include "path-util.h"
 #include "stat-util.h"
 #include "stdio-util.h"
 #include "strv.h"
+#include "user-util.h"
 
 /* This is the original MAX_HANDLE_SZ definition from the kernel, when the API was introduced. We use that in place of
  * any more currently defined value to future-proof things: if the size is increased in the API headers, and our code
@@ -111,7 +114,7 @@ static int fd_fdinfo_mnt_id(int fd, const char *filename, int flags, int *ret_mn
                 xsprintf(path, "/proc/self/fdinfo/%i", subfd);
         }
 
-        r = read_full_file(path, &fdinfo, NULL);
+        r = read_full_virtual_file(path, &fdinfo, NULL);
         if (r == -ENOENT) /* The fdinfo directory is a relatively new addition */
                 return -EOPNOTSUPP;
         if (r < 0)
@@ -132,6 +135,29 @@ static int fd_fdinfo_mnt_id(int fd, const char *filename, int flags, int *ret_mn
         return safe_atoi(p, ret_mnt_id);
 }
 
+static bool filename_possibly_with_slash_suffix(const char *s) {
+        const char *slash, *copied;
+
+        /* Checks whether the specified string is either file name, or a filename with a suffix of
+         * slashes. But nothing else.
+         *
+         * this is OK: foo, bar, foo/, bar/, foo//, bar///
+         * this is not OK: "", "/", "/foo", "foo/bar", ".", ".." … */
+
+        slash = strchr(s, '/');
+        if (!slash)
+                return filename_is_valid(s);
+
+        if (slash - s > PATH_MAX) /* We want to allocate on the stack below, hence do a size check first */
+                return false;
+
+        if (slash[strspn(slash, "/")] != 0) /* Check that the suffix consist only of one or more slashes */
+                return false;
+
+        copied = strndupa(s, slash - s);
+        return filename_is_valid(copied);
+}
+
 int fd_is_mount_point(int fd, const char *filename, int flags) {
         _cleanup_free_ struct file_handle *h = NULL, *h_parent = NULL;
         int mount_id = -1, mount_id_parent = -1;
@@ -143,6 +169,11 @@ int fd_is_mount_point(int fd, const char *filename, int flags) {
         assert(fd >= 0);
         assert(filename);
         assert((flags & ~(AT_SYMLINK_FOLLOW|AT_EMPTY_PATH)) == 0);
+
+        /* Insist that the specified filename is actually a filename, and not a path, i.e. some inode further
+         * up or down the tree then immediately below the specified directory fd. */
+        if (!filename_possibly_with_slash_suffix(filename))
+                return -EINVAL;
 
         /* First we will try statx()' STATX_ATTR_MOUNT_ROOT attribute, which is our ideal API, available
          * since kernel 5.8.
@@ -480,4 +511,26 @@ int mount_propagation_flags_from_string(const char *name, unsigned long *ret) {
         else
                 return -EINVAL;
         return 0;
+}
+
+int make_mount_point_inode_from_stat(const struct stat *st, const char *dest, mode_t mode) {
+        assert(st);
+        assert(dest);
+
+        if (S_ISDIR(st->st_mode))
+                return mkdir_label(dest, mode);
+        else
+                return mknod(dest, S_IFREG|(mode & ~0111), 0);
+}
+
+int make_mount_point_inode_from_path(const char *source, const char *dest, mode_t mode) {
+        struct stat st;
+
+        assert(source);
+        assert(dest);
+
+        if (stat(source, &st) < 0)
+                return -errno;
+
+        return make_mount_point_inode_from_stat(&st, dest, mode);
 }

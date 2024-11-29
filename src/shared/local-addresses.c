@@ -41,8 +41,6 @@ int local_addresses(sd_netlink *context, int ifindex, int af, struct local_addre
         sd_netlink_message *m;
         int r;
 
-        assert(ret);
-
         if (context)
                 rtnl = sd_netlink_ref(context);
         else {
@@ -135,9 +133,10 @@ int local_addresses(sd_netlink *context, int ifindex, int af, struct local_addre
                 n_list++;
         };
 
-        typesafe_qsort(list, n_list, address_compare);
-
-        *ret = TAKE_PTR(list);
+        if (ret) {
+                typesafe_qsort(list, n_list, address_compare);
+                *ret = TAKE_PTR(list);
+        }
 
         return (int) n_list;
 }
@@ -179,8 +178,6 @@ int local_gateways(sd_netlink *context, int ifindex, int af, struct local_addres
         size_t n_list = 0, n_allocated = 0;
         int r;
 
-        assert(ret);
-
         if (context)
                 rtnl = sd_netlink_ref(context);
         else {
@@ -207,7 +204,7 @@ int local_gateways(sd_netlink *context, int ifindex, int af, struct local_addres
                 union in_addr_union gateway;
                 uint16_t type;
                 unsigned char dst_len, src_len, table;
-                uint32_t ifi, metric = 0;
+                uint32_t ifi = 0, metric = 0;
                 size_t rta_len;
                 int family;
                 RouteVia via;
@@ -309,9 +306,10 @@ int local_gateways(sd_netlink *context, int ifindex, int af, struct local_addres
                 }
         }
 
-        typesafe_qsort(list, n_list, address_compare);
-
-        *ret = TAKE_PTR(list);
+        if (ret) {
+                typesafe_qsort(list, n_list, address_compare);
+                *ret = TAKE_PTR(list);
+        }
 
         return (int) n_list;
 }

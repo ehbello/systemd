@@ -131,10 +131,8 @@ static int scope_verify(Scope *s) {
 
         if (set_isempty(UNIT(s)->pids) &&
             !MANAGER_IS_RELOADING(UNIT(s)->manager) &&
-            !unit_has_name(UNIT(s), SPECIAL_INIT_SCOPE)) {
-                log_unit_error(UNIT(s), "Scope has no PIDs. Refusing.");
-                return -ENOENT;
-        }
+            !unit_has_name(UNIT(s), SPECIAL_INIT_SCOPE))
+                return log_unit_error_errno(UNIT(s), SYNTHETIC_ERRNO(ENOENT), "Scope has no PIDs. Refusing.");
 
         return 0;
 }
@@ -377,10 +375,6 @@ static int scope_start(Unit *u) {
                 return r;
         }
 
-        /* Now u->pids have been moved into the scope cgroup, it's not needed
-         * anymore. */
-        u->pids = set_free(u->pids);
-
         s->result = SCOPE_SUCCESS;
 
         scope_set_state(s, SCOPE_RUNNING);
@@ -388,7 +382,13 @@ static int scope_start(Unit *u) {
         /* Set the maximum runtime timeout. */
         scope_arm_timer(s, usec_add(UNIT(s)->active_enter_timestamp.monotonic, s->runtime_max_usec));
 
-        /* Start watching the PIDs currently in the scope */
+        /* On unified we use proper notifications hence we can unwatch the PIDs
+         * we just attached to the scope. This can also be done on legacy as
+         * we're going to update the list of the processes we watch with the
+         * PIDs currently in the scope anyway. */
+        unit_unwatch_all_pids(u);
+
+        /* Start watching the PIDs currently in the scope (legacy hierarchy only) */
         (void) unit_enqueue_rewatch_pids(u);
         return 1;
 }
@@ -498,11 +498,7 @@ static int scope_deserialize_item(Unit *u, const char *key, const char *value, F
                 if (parse_pid(value, &pid) < 0)
                         log_unit_debug(u, "Failed to parse pids value: %s", value);
                 else {
-                        r = set_ensure_allocated(&u->pids, NULL);
-                        if (r < 0)
-                                return r;
-
-                        r = set_put(u->pids, PID_TO_PTR(pid));
+                        r = set_ensure_put(&u->pids, NULL, PID_TO_PTR(pid));
                         if (r < 0)
                                 return r;
                 }

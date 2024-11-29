@@ -42,7 +42,6 @@ install_headers(
         '_sd-common.h',
         subdir : 'systemd')
 
-
 ############################################################
 
 opts = [['c'],
@@ -54,7 +53,7 @@ if cc.has_argument('-std=iso9899:2017')
         opts += [['c', '-std=iso9899:2017']]
 endif
 
-if add_languages('cpp', required : false)
+if cxx_cmd != ''
         opts += [['c++'],
                  ['c++', '-std=c++98'],
                  ['c++', '-std=c++11']]

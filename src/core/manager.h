@@ -36,7 +36,7 @@ typedef enum ManagerState {
         MANAGER_MAINTENANCE,
         MANAGER_STOPPING,
         _MANAGER_STATE_MAX,
-        _MANAGER_STATE_INVALID = -1
+        _MANAGER_STATE_INVALID = -EINVAL,
 } ManagerState;
 
 typedef enum ManagerObjective {
@@ -50,7 +50,7 @@ typedef enum ManagerObjective {
         MANAGER_KEXEC,
         MANAGER_SWITCH_ROOT,
         _MANAGER_OBJECTIVE_MAX,
-        _MANAGER_OBJECTIVE_INVALID = -1
+        _MANAGER_OBJECTIVE_INVALID = -EINVAL,
 } ManagerObjective;
 
 typedef enum StatusType {
@@ -65,7 +65,7 @@ typedef enum OOMPolicy {
         OOM_STOP,              /* The kernel kills the process it wants to kill, and we stop the unit */
         OOM_KILL,              /* The kernel kills the process it wants to kill, and all others in the unit, and we stop the unit */
         _OOM_POLICY_MAX,
-        _OOM_POLICY_INVALID = -1
+        _OOM_POLICY_INVALID = -EINVAL,
 } OOMPolicy;
 
 /* Notes:
@@ -111,7 +111,7 @@ typedef enum ManagerTimestamp {
         MANAGER_TIMESTAMP_INITRD_UNITS_LOAD_START,
         MANAGER_TIMESTAMP_INITRD_UNITS_LOAD_FINISH,
         _MANAGER_TIMESTAMP_MAX,
-        _MANAGER_TIMESTAMP_INVALID = -1,
+        _MANAGER_TIMESTAMP_INVALID = -EINVAL,
 } ManagerTimestamp;
 
 typedef enum WatchdogType {
@@ -241,6 +241,8 @@ struct Manager {
         usec_t watchdog[_WATCHDOG_TYPE_MAX];
         usec_t watchdog_overridden[_WATCHDOG_TYPE_MAX];
 
+        bool runtime_watchdog_running; /* Whether the runtime HW watchdog was started, so we know if we still need to get the real timeout from the hardware */
+
         dual_timestamp timestamps[_MANAGER_TIMESTAMP_MAX];
 
         /* Data specific to the device subsystem */
@@ -309,25 +311,25 @@ struct Manager {
 
         /* The stat() data the last time we saw /etc/localtime */
         usec_t etc_localtime_mtime;
-        bool etc_localtime_accessible:1;
+        bool etc_localtime_accessible;
 
-        ManagerObjective objective:5;
+        ManagerObjective objective;
 
         /* Flags */
-        bool dispatching_load_queue:1;
+        bool dispatching_load_queue;
 
-        bool taint_usr:1;
+        bool taint_usr;
 
         /* Have we already sent out the READY=1 notification? */
-        bool ready_sent:1;
+        bool ready_sent;
 
         /* Have we already printed the taint line if necessary? */
-        bool taint_logged:1;
+        bool taint_logged;
 
         /* Have we ever changed the "kernel.pid_max" sysctl? */
-        bool sysctl_pid_max_changed:1;
+        bool sysctl_pid_max_changed;
 
-        ManagerTestRunFlags test_run_flags:8;
+        ManagerTestRunFlags test_run_flags;
 
         /* If non-zero, exit with the following value when the systemd
          * process terminate. Useful for containers: systemd-nspawn could get
@@ -364,8 +366,8 @@ struct Manager {
 
         int original_log_level;
         LogTarget original_log_target;
-        bool log_level_overridden:1;
-        bool log_target_overridden:1;
+        bool log_level_overridden;
+        bool log_target_overridden;
 
         struct rlimit *rlimit[_RLIMIT_MAX];
 
@@ -535,7 +537,7 @@ void manager_unref_uid(Manager *m, uid_t uid, bool destroy_now);
 int manager_ref_uid(Manager *m, uid_t uid, bool clean_ipc);
 
 void manager_unref_gid(Manager *m, gid_t gid, bool destroy_now);
-int manager_ref_gid(Manager *m, gid_t gid, bool destroy_now);
+int manager_ref_gid(Manager *m, gid_t gid, bool clean_ipc);
 
 char *manager_taint_string(Manager *m);
 
@@ -562,6 +564,7 @@ ManagerTimestamp manager_timestamp_initrd_mangle(ManagerTimestamp s);
 usec_t manager_get_watchdog(Manager *m, WatchdogType t);
 void manager_set_watchdog(Manager *m, WatchdogType t, usec_t timeout);
 int manager_override_watchdog(Manager *m, WatchdogType t, usec_t timeout);
+void manager_retry_runtime_watchdog(Manager *m);
 
 const char* oom_policy_to_string(OOMPolicy i) _const_;
 OOMPolicy oom_policy_from_string(const char *s) _pure_;

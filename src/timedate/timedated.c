@@ -211,7 +211,7 @@ static int context_parse_ntp_services_from_disk(Context *c) {
                                 break;
 
                         word = strstrip(line);
-                        if (isempty(word) || startswith("#", word))
+                        if (isempty(word) || startswith(word, "#"))
                                 continue;
 
                         r = context_add_ntp_service(c, word, *f);
@@ -725,7 +725,7 @@ static int method_set_local_rtc(sd_bus_message *m, void *userdata, sd_bus_error 
         if (r < 0)
                 return r;
 
-        if (lrtc == c->local_rtc)
+        if (lrtc == c->local_rtc && !fix_system)
                 return sd_bus_reply_method_return(m, NULL);
 
         r = bus_verify_polkit_async(
@@ -742,13 +742,15 @@ static int method_set_local_rtc(sd_bus_message *m, void *userdata, sd_bus_error 
         if (r == 0)
                 return 1;
 
-        c->local_rtc = lrtc;
+        if (lrtc != c->local_rtc) {
+                c->local_rtc = lrtc;
 
-        /* 1. Write new configuration file */
-        r = context_write_data_local_rtc(c);
-        if (r < 0) {
-                log_error_errno(r, "Failed to set RTC to %s: %m", lrtc ? "local" : "UTC");
-                return sd_bus_error_set_errnof(error, r, "Failed to set RTC to %s: %m", lrtc ? "local" : "UTC");
+                /* 1. Write new configuration file */
+                r = context_write_data_local_rtc(c);
+                if (r < 0) {
+                        log_error_errno(r, "Failed to set RTC to %s: %m", lrtc ? "local" : "UTC");
+                        return sd_bus_error_set_errnof(error, r, "Failed to set RTC to %s: %m", lrtc ? "local" : "UTC");
+                }
         }
 
         /* 2. Tell the kernel our timezone */
@@ -771,7 +773,7 @@ static int method_set_local_rtc(sd_bus_message *m, void *userdata, sd_bus_error 
                         log_debug_errno(r, "Failed to get hardware clock, ignoring: %m");
                 else {
                         /* And set the system clock with this */
-                        mktime_or_timegm(&tm, !c->local_rtc);
+                        ts.tv_sec = mktime_or_timegm(&tm, !c->local_rtc);
 
                         if (clock_settime(CLOCK_REALTIME, &ts) < 0)
                                 log_debug_errno(errno, "Failed to update system clock, ignoring: %m");
@@ -1109,7 +1111,7 @@ static int run(int argc, char *argv[]) {
         _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int r;
 
-        log_setup_service();
+        log_setup();
 
         r = service_parse_argv("systemd-timedated.service",
                                "Manage the system clock and timezone and NTP enablement.",

@@ -146,7 +146,6 @@ static int create_edit_temp_file(const char *new_path, const char *original_path
                 _cleanup_free_ char *new_contents = NULL;
                 _cleanup_fclose_ FILE *f = NULL;
                 char **path;
-                size_t size;
 
                 r = mac_selinux_create_file_prepare(new_path, S_IFREG);
                 if (r < 0)
@@ -161,7 +160,7 @@ static int create_edit_temp_file(const char *new_path, const char *original_path
                 if (r < 0)
                         return log_error_errno(errno, "Failed to change mode of \"%s\": %m", t);
 
-                r = read_full_file(new_path, &new_contents, &size);
+                r = read_full_file(new_path, &new_contents, NULL);
                 if (r < 0 && r != -ENOENT)
                         return log_error_errno(r, "Failed to read \"%s\": %m", new_path);
 
@@ -182,16 +181,18 @@ static int create_edit_temp_file(const char *new_path, const char *original_path
                         if (path_equal(*path, new_path))
                                 continue;
 
-                        r = read_full_file(*path, &contents, &size);
+                        r = read_full_file(*path, &contents, NULL);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to read \"%s\": %m", *path);
 
                         fprintf(f, "\n\n### %s", *path);
                         if (!isempty(contents)) {
-                                contents = strreplace(strstrip(contents), "\n", "\n# ");
-                                if (!contents)
+                                _cleanup_free_ char *commented_contents = NULL;
+
+                                commented_contents = strreplace(strstrip(contents), "\n", "\n# ");
+                                if (!commented_contents)
                                         return log_oom();
-                                fprintf(f, "\n# %s", contents);
+                                fprintf(f, "\n# %s", commented_contents);
                         }
                 }
 
@@ -398,16 +399,14 @@ static int find_paths_to_edit(sd_bus *bus, char **names, char ***paths) {
                         /* If loading of the unit failed server side complete, then the server won't tell us
                          * the unit file path. In that case, find the file client side. */
                         log_debug_errno(r, "Unit '%s' was not loaded correctly, retrying client-side.", *name);
-                        r = unit_find_paths(bus, *name, &lp, true, &cached_name_map, &cached_id_map, &path, NULL);
+                        r = unit_find_paths(bus, *name, &lp, true, &cached_name_map, &cached_id_map, &path, &unit_paths);
                 }
                 if (r == -ERFKILL)
                         return log_error_errno(r, "Unit '%s' masked, cannot edit.", *name);
                 if (r < 0)
                         return r;
 
-                if (r == 0) {
-                        assert(!path);
-
+                if (!path) {
                         if (!arg_force) {
                                 log_info("Run 'systemctl edit%s --force --full %s' to create a new unit.",
                                          arg_scope == UNIT_FILE_GLOBAL ? " --global" :
@@ -422,8 +421,6 @@ static int find_paths_to_edit(sd_bus *bus, char **names, char ***paths) {
                                                  arg_full ? NULL : ".d/override.conf",
                                                  NULL, &new_path, &tmp_path);
                 } else {
-                        assert(path);
-
                         unit_name = basename(path);
                         /* We follow unit aliases, but we need to propagate the instance */
                         if (unit_name_is_valid(*name, UNIT_NAME_INSTANCE) &&
@@ -472,9 +469,11 @@ static int trim_edit_markers(const char *path) {
         int r;
 
         /* Trim out the lines between the two markers */
-        r = read_full_file(path, &contents, &size);
+        r = read_full_file(path, &contents, NULL);
         if (r < 0)
                 return log_error_errno(r, "Failed to read temporary file \"%s\": %m", path);
+
+        size = strlen(contents);
 
         contents_start = strstr(contents, EDIT_MARKER_START);
         if (contents_start)

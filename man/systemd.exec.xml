@@ -117,6 +117,20 @@
         <para>The <varname>MountAPIVFS=</varname> and <varname>PrivateUsers=</varname> settings are particularly useful
         in conjunction with <varname>RootDirectory=</varname>. For details, see below.</para>
 
+        <para>If <varname>RootDirectory=</varname>/<varname>RootImage=</varname> are used together with
+        <varname>NotifyAccess=</varname> the notification socket is automatically mounted from the host into
+        the root environment, to ensure the notification interface can work correctly.</para>
+
+        <para>Note that services using <varname>RootDirectory=</varname>/<varname>RootImage=</varname> will
+        not be able to log via the syslog or journal protocols to the host logging infrastructure, unless the
+        relevant sockets are mounted from the host, specifically:</para>
+
+        <example>
+          <title>Mounting logging sockets into root environment</title>
+
+          <programlisting>BindReadOnlyPaths=/dev/log /run/systemd/journal/socket /run/systemd/journal/stdout</programlisting>
+        </example>
+
         <xi:include href="system-only.xml" xpointer="singular"/></listitem>
       </varlistentry>
 
@@ -159,50 +173,11 @@
         <citerefentry project='man-pages'><refentrytitle>mount</refentrytitle><manvolnum>8</manvolnum></citerefentry>.
         </para>
 
-        <para>Valid partition names follow the <ulink url="https://systemd.io/DISCOVERABLE_PARTITIONS">Discoverable
-        Partitions Specification</ulink>.</para>
-
-        <table>
-          <title>Accepted partition names</title>
-
-          <tgroup cols='1'>
-            <colspec colname='partition' />
-            <thead>
-              <row>
-                <entry>Partition Name</entry>
-              </row>
-            </thead>
-            <tbody>
-              <row>
-                <entry>root</entry>
-              </row>
-              <row>
-                <entry>root-secondary</entry>
-              </row>
-              <row>
-                <entry>home</entry>
-              </row>
-              <row>
-                <entry>srv</entry>
-              </row>
-              <row>
-                <entry>esp</entry>
-              </row>
-              <row>
-                <entry>xbootldr</entry>
-              </row>
-              <row>
-                <entry>tmp</entry>
-              </row>
-              <row>
-                <entry>var</entry>
-              </row>
-              <row>
-                <entry>usr</entry>
-              </row>
-            </tbody>
-          </tgroup>
-        </table>
+        <para>Valid partition names follow the <ulink
+        url="https://systemd.io/DISCOVERABLE_PARTITIONS">Discoverable Partitions Specification</ulink>:
+        <constant>root</constant>, <constant>usr</constant>, <constant>home</constant>, <constant>srv</constant>,
+        <constant>esp</constant>, <constant>xbootldr</constant>, <constant>tmp</constant>,
+        <constant>var</constant>.</para>
 
         <xi:include href="system-only.xml" xpointer="singular"/></listitem>
       </varlistentry>
@@ -275,14 +250,19 @@
         <term><varname>MountAPIVFS=</varname></term>
 
         <listitem><para>Takes a boolean argument. If on, a private mount namespace for the unit's processes is created
-        and the API file systems <filename>/proc/</filename>, <filename>/sys/</filename>, and <filename>/dev/</filename>
-        are mounted inside of it, unless they are already mounted. Note that this option has no effect unless used in
-        conjunction with <varname>RootDirectory=</varname>/<varname>RootImage=</varname> as these three mounts are
+        and the API file systems <filename>/proc/</filename>, <filename>/sys/</filename>, <filename>/dev/</filename> and
+        <filename>/run/</filename> (as an empty <literal>tmpfs</literal>) are mounted inside of it, unless they are
+        already mounted. Note that this option has no effect unless used in conjunction with
+        <varname>RootDirectory=</varname>/<varname>RootImage=</varname> as these four mounts are
         generally mounted in the host anyway, and unless the root directory is changed, the private mount namespace
-        will be a 1:1 copy of the host's, and include these three mounts. Note that the <filename>/dev/</filename> file
+        will be a 1:1 copy of the host's, and include these four mounts. Note that the <filename>/dev/</filename> file
         system of the host is bind mounted if this option is used without <varname>PrivateDevices=</varname>. To run
         the service with a private, minimal version of <filename>/dev/</filename>, combine this option with
         <varname>PrivateDevices=</varname>.</para>
+
+        <para>In order to allow propagating mounts at runtime in a safe manner, <filename>/run/systemd/propagate</filename>
+        on the host will be used to set up new mounts, and <filename>/run/host/incoming/</filename> in the private namespace
+        will be used as an intermediate step to store them before being moved to the final mount point.</para>
 
         <xi:include href="system-only.xml" xpointer="singular"/></listitem>
       </varlistentry>
@@ -305,8 +285,11 @@
         Filesystem</ulink>. It is generally recommended to run most system services with this option set to
         <literal>invisible</literal>. This option is implemented via file system namespacing, and thus cannot
         be used with services that shall be able to install mount points in the host file system
-        hierarchy. It also cannot be used for services that need to access metainformation about other users'
-        processes. This option implies <varname>MountAPIVFS=</varname>.</para>
+        hierarchy. Note that the root user is unaffected by this option, so to be effective it has to be used
+        together with <varname>User=</varname> or <varname>DynamicUser=yes</varname>, and also without the
+        <literal>CAP_SYS_PTRACE</literal> capability, which also allows a process to bypass this feature. It
+        cannot be used for services that need to access metainformation about other users' processes. This
+        option implies <varname>MountAPIVFS=</varname>.</para>
 
         <para>If the kernel doesn't support per-mount point <option>hidepid=</option> mount options this
         setting remains without effect, and the unit's processes will be able to access and see other process
@@ -319,10 +302,10 @@
         <term><varname>ProcSubset=</varname></term>
 
         <listitem><para>Takes one of <literal>all</literal> (the default) and <literal>pid</literal>. If
-        the latter all files and directories not directly associated with process management and introspection
-        are made invisible in the <filename>/proc/</filename> file system configured for the unit's
-        processes. This controls the <literal>subset=</literal> mount option of the <literal>procfs</literal>
-        instance for the unit. For further details see <ulink
+        <literal>pid</literal>, all files and directories not directly associated with process management and
+        introspection are made invisible in the <filename>/proc/</filename> file system configured for the
+        unit's processes. This controls the <literal>subset=</literal> mount option of the
+        <literal>procfs</literal> instance for the unit. For further details see <ulink
         url="https://www.kernel.org/doc/html/latest/filesystems/proc.html#mount-options">The /proc
         Filesystem</ulink>. Note that Linux exposes various kernel APIs via <filename>/proc/</filename>,
         which are made unavailable with this setting. Since these APIs are used frequently this option is
@@ -414,11 +397,53 @@
 
         <xi:include href="system-only.xml" xpointer="singular"/></listitem>
       </varlistentry>
+
+      <varlistentry>
+        <term><varname>ExtensionImages=</varname></term>
+
+        <listitem><para>This setting is similar to <varname>MountImages=</varname> in that it mounts a file
+        system hierarchy from a block device node or loopback file, but instead of providing a destination path,
+        an overlay will be set up. This option expects a whitespace separated list of mount definitions. Each
+        definition consists of a source path, optionally followed by a colon and a list of mount options.</para>
+
+        <para>A read-only OverlayFS will be set up on top of <filename>/usr/</filename> and
+        <filename>/opt/</filename> hierarchies from the root. The order in which the images are listed
+        will determine the order in which the overlay is laid down: images specified first to last will result
+        in overlayfs layers bottom to top.</para>
+
+        <para>Mount options may be defined as a single comma-separated list of options, in which case they
+        will be implicitly applied to the root partition on the image, or a series of colon-separated tuples
+        of partition name and mount options. Valid partition names and mount options are the same as for
+        <varname>RootImageOptions=</varname> setting described above.</para>
+
+        <para>Each mount definition may be prefixed with <literal>-</literal>, in which case it will be
+        ignored when its source path does not exist. The source argument is a path to a block device node or
+        regular file. If the source path contains a <literal>:</literal>, it needs to be escaped as
+        <literal>\:</literal>. The device node or file system image file needs to follow the same rules as
+        specified for <varname>RootImage=</varname>. Any mounts created with this option are specific to the
+        unit, and are not visible in the host's mount table.</para>
+
+        <para>These settings may be used more than once, each usage appends to the unit's list of image
+        paths. If the empty string is assigned, the entire list of mount paths defined prior to this is
+        reset.</para>
+
+        <para>When <varname>DevicePolicy=</varname> is set to <literal>closed</literal> or
+        <literal>strict</literal>, or set to <literal>auto</literal> and <varname>DeviceAllow=</varname> is
+        set, then this setting adds <filename>/dev/loop-control</filename> with <constant>rw</constant> mode,
+        <literal>block-loop</literal> and <literal>block-blkext</literal> with <constant>rwm</constant> mode
+        to <varname>DeviceAllow=</varname>. See
+        <citerefentry><refentrytitle>systemd.resource-control</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+        for the details about <varname>DevicePolicy=</varname> or <varname>DeviceAllow=</varname>. Also, see
+        <varname>PrivateDevices=</varname> below, as it may change the setting of
+        <varname>DevicePolicy=</varname>.</para>
+
+        <xi:include href="system-only.xml" xpointer="singular"/></listitem>
+      </varlistentry>
     </variablelist>
   </refsect1>
 
   <refsect1>
-    <title>Credentials</title>
+    <title>User/Group Identity</title>
 
     <xi:include href="system-only.xml" xpointer="plural"/>
 
@@ -634,16 +659,25 @@ CapabilityBoundingSet=~CAP_B CAP_C</programlisting>
         setgid bits, or filesystem capabilities). This is the simplest and most effective way to ensure that
         a process and its children can never elevate privileges again. Defaults to false, but certain
         settings override this and ignore the value of this setting.  This is the case when
-        <varname>SystemCallFilter=</varname>, <varname>SystemCallArchitectures=</varname>,
-        <varname>RestrictAddressFamilies=</varname>, <varname>RestrictNamespaces=</varname>,
-        <varname>PrivateDevices=</varname>, <varname>ProtectKernelTunables=</varname>,
-        <varname>ProtectKernelModules=</varname>, <varname>ProtectKernelLogs=</varname>,
-        <varname>ProtectClock=</varname>, <varname>MemoryDenyWriteExecute=</varname>,
-        <varname>RestrictRealtime=</varname>, <varname>RestrictSUIDSGID=</varname>, <varname>DynamicUser=</varname>
-        or <varname>LockPersonality=</varname> are specified. Note that even if this setting is overridden by them,
-        <command>systemctl show</command> shows the original value of this setting.
-        Also see <ulink url="https://www.kernel.org/doc/html/latest/userspace-api/no_new_privs.html">No New Privileges
-        Flag</ulink>.</para></listitem>
+        <varname>DynamicUser=</varname>,
+        <varname>LockPersonality=</varname>,
+        <varname>MemoryDenyWriteExecute=</varname>,
+        <varname>PrivateDevices=</varname>,
+        <varname>ProtectClock=</varname>,
+        <varname>ProtectHostname=</varname>,
+        <varname>ProtectKernelLogs=</varname>,
+        <varname>ProtectKernelModules=</varname>,
+        <varname>ProtectKernelTunables=</varname>,
+        <varname>RestrictAddressFamilies=</varname>,
+        <varname>RestrictNamespaces=</varname>,
+        <varname>RestrictRealtime=</varname>,
+        <varname>RestrictSUIDSGID=</varname>,
+        <varname>SystemCallArchitectures=</varname>,
+        <varname>SystemCallFilter=</varname>, or
+        <varname>SystemCallLog=</varname> are specified. Note that even if this setting is overridden
+        by them, <command>systemctl show</command> shows the original value of this setting. Also see
+        <ulink url="https://www.kernel.org/doc/html/latest/userspace-api/no_new_privs.html">No New
+        Privileges Flag</ulink>.</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -747,8 +781,8 @@ CapabilityBoundingSet=~CAP_B CAP_C</programlisting>
         enforcement. For example, time limits specified for <varname>LimitCPU=</varname> will be rounded up
         implicitly to multiples of 1s. For <varname>LimitNICE=</varname> the value may be specified in two
         syntaxes: if prefixed with <literal>+</literal> or <literal>-</literal>, the value is understood as
-        regular Linux nice value in the range -20..19. If not prefixed like this the value is understood as
-        raw resource limit parameter in the range 0..40 (with 0 being equivalent to 1).</para>
+        regular Linux nice value in the range -20…19. If not prefixed like this the value is understood as
+        raw resource limit parameter in the range 0…40 (with 0 being equivalent to 1).</para>
 
         <para>Note that most process resource limits configured with these options are per-process, and
         processes may fork in order to acquire a new set of resources that are accounted independently of the
@@ -1340,6 +1374,8 @@ StateDirectory=aaa/bbb ccc</programlisting>
         <term><varname>ReadWritePaths=</varname></term>
         <term><varname>ReadOnlyPaths=</varname></term>
         <term><varname>InaccessiblePaths=</varname></term>
+        <term><varname>ExecPaths=</varname></term>
+        <term><varname>NoExecPaths=</varname></term>
 
         <listitem><para>Sets up a new file system namespace for executed processes. These options may be used
         to limit access a process has to the file system. Each setting takes a space-separated list of paths
@@ -1361,12 +1397,18 @@ StateDirectory=aaa/bbb ccc</programlisting>
         <varname>BindPaths=</varname>, or <varname>BindReadOnlyPaths=</varname> inside it. For a more flexible option,
         see <varname>TemporaryFileSystem=</varname>.</para>
 
+        <para>Content in paths listed in <varname>NoExecPaths=</varname> are not executable even if the usual
+        file access controls would permit this. Nest <varname>ExecPaths=</varname> inside of
+        <varname>NoExecPaths=</varname> in order to provide executable content within non-executable
+        directories.</para>
+
         <para>Non-directory paths may be specified as well. These options may be specified more than once,
         in which case all paths listed will have limited access from within the namespace. If the empty string is
         assigned to this option, the specific list is reset, and all prior assignments have no effect.</para>
 
-        <para>Paths in <varname>ReadWritePaths=</varname>, <varname>ReadOnlyPaths=</varname> and
-        <varname>InaccessiblePaths=</varname> may be prefixed with <literal>-</literal>, in which case they will be
+        <para>Paths in <varname>ReadWritePaths=</varname>, <varname>ReadOnlyPaths=</varname>,
+        <varname>InaccessiblePaths=</varname>, <varname>ExecPaths=</varname> and
+        <varname>NoExecPaths=</varname> may be prefixed with <literal>-</literal>, in which case they will be
         ignored when they do not exist. If prefixed with <literal>+</literal> the paths are taken relative to the root
         directory of the unit, as configured with <varname>RootDirectory=</varname>/<varname>RootImage=</varname>,
         instead of relative to the root directory of the host (see above). When combining <literal>-</literal> and
@@ -1388,6 +1430,15 @@ StateDirectory=aaa/bbb ccc</programlisting>
         effective sandboxed environment for a unit it is thus recommended to combine these settings with either
         <varname>CapabilityBoundingSet=~CAP_SYS_ADMIN</varname> or
         <varname>SystemCallFilter=~@mount</varname>.</para>
+
+        <para>Simple allow-list example using these directives:
+        <programlisting>[Service]
+ReadOnlyPaths=/
+ReadWritePaths=/var /run
+InaccessiblePaths=-/lost+found
+NoExecPaths=/
+ExecPaths=/usr/sbin/my_daemon /usr/lib /usr/lib64
+</programlisting></para>
 
         <xi:include href="system-only.xml" xpointer="plural"/></listitem>
       </varlistentry>
@@ -1424,14 +1475,13 @@ BindReadOnlyPaths=/var/lib/systemd</programlisting>
         executed processes and mounts private <filename>/tmp/</filename> and <filename>/var/tmp/</filename>
         directories inside it that are not shared by processes outside of the namespace. This is useful to
         secure access to temporary files of the process, but makes sharing between processes via
-        <filename>/tmp/</filename> or <filename>/var/tmp/</filename> impossible. If this is enabled, all
-        temporary files created by a service in these directories will be removed after the service is
-        stopped. Defaults to false. It is possible to run two or more units within the same private
-        <filename>/tmp/</filename> and <filename>/var/tmp/</filename> namespace by using the
-        <varname>JoinsNamespaceOf=</varname> directive, see
-        <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry> for
-        details. This setting is implied if <varname>DynamicUser=</varname> is set. For this setting the same
-        restrictions regarding mount propagation and privileges apply as for
+        <filename>/tmp/</filename> or <filename>/var/tmp/</filename> impossible. If true, all temporary files
+        created by a service in these directories will be removed after the service is stopped. Defaults to
+        false. It is possible to run two or more units within the same private <filename>/tmp/</filename> and
+        <filename>/var/tmp/</filename> namespace by using the <varname>JoinsNamespaceOf=</varname> directive,
+        see <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+        for details. This setting is implied if <varname>DynamicUser=</varname> is set. For this setting the
+        same restrictions regarding mount propagation and privileges apply as for
         <varname>ReadOnlyPaths=</varname> and related calls, see above. Enabling this setting has the side
         effect of adding <varname>Requires=</varname> and <varname>After=</varname> dependencies on all mount
         units necessary to access <filename>/tmp/</filename> and <filename>/var/tmp/</filename>. Moreover an
@@ -1460,14 +1510,14 @@ BindReadOnlyPaths=/var/lib/systemd</programlisting>
         unit (see above), and set <varname>DevicePolicy=closed</varname> (see
         <citerefentry><refentrytitle>systemd.resource-control</refentrytitle><manvolnum>5</manvolnum></citerefentry>
         for details). Note that using this setting will disconnect propagation of mounts from the service to the host
-        (propagation in the opposite direction continues to work).  This means that this setting may not be used for
+        (propagation in the opposite direction continues to work). This means that this setting may not be used for
         services which shall be able to install mount points in the main mount namespace. The new
         <filename>/dev/</filename> will be mounted read-only and 'noexec'. The latter may break old programs which try
         to set up executable memory by using
         <citerefentry><refentrytitle>mmap</refentrytitle><manvolnum>2</manvolnum></citerefentry> of
         <filename>/dev/zero</filename> instead of using <constant>MAP_ANON</constant>. For this setting the same
         restrictions regarding mount propagation and privileges apply as for <varname>ReadOnlyPaths=</varname> and
-        related calls, see above.  If turned on and if running in user mode, or in system mode, but without the
+        related calls, see above. If turned on and if running in user mode, or in system mode, but without the
         <constant>CAP_SYS_ADMIN</constant> capability (e.g. setting <varname>User=</varname>),
         <varname>NoNewPrivileges=yes</varname> is implied.</para>
 
@@ -1527,6 +1577,53 @@ BindReadOnlyPaths=/var/lib/systemd</programlisting>
       </varlistentry>
 
       <varlistentry>
+        <term><varname>PrivateIPC=</varname></term>
+
+        <listitem><para>Takes a boolean argument. If true, sets up a new IPC namespace for the executed processes.
+        Each IPC namespace has its own set of System V IPC identifiers and its own POSIX message queue file system.
+        This is useful to avoid name clash of IPC identifiers. Defaults to false. It is possible to run two or
+        more units within the same private IPC namespace by using the <varname>JoinsNamespaceOf=</varname> directive,
+        see <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry> for
+        details.</para>
+
+        <para>Note that IPC namespacing does not have an effect on
+        <constant>AF_UNIX</constant> sockets, which are the most common
+        form of IPC used on Linux. Instead, <constant>AF_UNIX</constant>
+        sockets in the file system are subject to mount namespacing, and
+        those in the abstract namespace are subject to network namespacing.
+        IPC namespacing only has an effect on SysV IPC (which is mostly
+        legacy) as well as POSIX message queues (for which
+        <constant>AF_UNIX</constant>/<constant>SOCK_SEQPACKET</constant>
+        sockets are typically a better replacement). IPC namespacing also
+        has no effect on POSIX shared memory (which is subject to mount
+        namespacing) either. See
+        <citerefentry project='man-pages'><refentrytitle>ipc_namespaces</refentrytitle><manvolnum>7</manvolnum></citerefentry> for
+        the details.</para>
+
+        <para>Note that the implementation of this setting might be impossible (for example if IPC namespaces are
+        not available), and the unit should be written in a way that does not solely rely on this setting for
+        security.</para>
+
+        <xi:include href="system-only.xml" xpointer="singular"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>IPCNamespacePath=</varname></term>
+
+        <listitem><para>Takes an absolute file system path refererring to a Linux IPC namespace
+        pseudo-file (i.e. a file like <filename>/proc/$PID/ns/ipc</filename> or a bind mount or symlink to
+        one). When set the invoked processes are added to the network namespace referenced by that path. The
+        path has to point to a valid namespace file at the moment the processes are forked off. If this
+        option is used <varname>PrivateIPC=</varname> has no effect. If this option is used together with
+        <varname>JoinsNamespaceOf=</varname> then it only has an effect if this unit is started before any of
+        the listed units that have <varname>PrivateIPC=</varname> or
+        <varname>IPCNamespacePath=</varname> configured, as otherwise the network namespace of those
+        units is reused.</para>
+
+        <xi:include href="system-only.xml" xpointer="singular"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><varname>PrivateUsers=</varname></term>
 
         <listitem><para>Takes a boolean argument. If true, sets up a new user namespace for the executed processes and
@@ -1573,6 +1670,10 @@ BindReadOnlyPaths=/var/lib/systemd</programlisting>
         the system into the service, it is hence not suitable for services that need to take notice of system
         hostname changes dynamically.</para>
 
+        <para>If this setting is on, but the unit doesn't have the <constant>CAP_SYS_ADMIN</constant>
+        capability (e.g. services for which <varname>User=</varname> is set),
+        <varname>NoNewPrivileges=yes</varname> is implied.</para>
+
         <xi:include href="system-only.xml" xpointer="singular"/></listitem>
       </varlistentry>
 
@@ -1586,7 +1687,9 @@ BindReadOnlyPaths=/var/lib/systemd</programlisting>
         clock, and <varname>DeviceAllow=char-rtc r</varname> is implied. This ensures <filename>/dev/rtc0</filename>,
         <filename>/dev/rtc1</filename>, etc. are made read-only to the service. See
         <citerefentry><refentrytitle>systemd.resource-control</refentrytitle><manvolnum>5</manvolnum></citerefentry>
-        for the details about <varname>DeviceAllow=</varname>.</para>
+        for the details about <varname>DeviceAllow=</varname>. If this setting is on, but the unit
+        doesn't have the <constant>CAP_SYS_ADMIN</constant> capability (e.g. services for which
+        <varname>User=</varname> is set), <varname>NoNewPrivileges=yes</varname> is implied.</para>
 
         <xi:include href="system-only.xml" xpointer="singular"/></listitem>
       </varlistentry>
@@ -1603,13 +1706,14 @@ BindReadOnlyPaths=/var/lib/systemd</programlisting>
         <citerefentry><refentrytitle>sysctl.d</refentrytitle><manvolnum>5</manvolnum></citerefentry> mechanism. Few
         services need to write to these at runtime; it is hence recommended to turn this on for most services. For this
         setting the same restrictions regarding mount propagation and privileges apply as for
-        <varname>ReadOnlyPaths=</varname> and related calls, see above. Defaults to off.  If turned on and if running
-        in user mode, or in system mode, but without the <constant>CAP_SYS_ADMIN</constant> capability (e.g.  services
-        for which <varname>User=</varname> is set), <varname>NoNewPrivileges=yes</varname> is implied. Note that this
-        option does not prevent indirect changes to kernel tunables effected by IPC calls to other processes. However,
-        <varname>InaccessiblePaths=</varname> may be used to make relevant IPC file system objects inaccessible. If
-        <varname>ProtectKernelTunables=</varname> is set, <varname>MountAPIVFS=yes</varname> is
-        implied.</para>
+        <varname>ReadOnlyPaths=</varname> and related calls, see above. Defaults to off. If this
+        setting is on, but the unit doesn't have the <constant>CAP_SYS_ADMIN</constant> capability
+        (e.g. services for which <varname>User=</varname> is set),
+        <varname>NoNewPrivileges=yes</varname> is implied. Note that this option does not prevent
+        indirect changes to kernel tunables effected by IPC calls to other processes. However,
+        <varname>InaccessiblePaths=</varname> may be used to make relevant IPC file system objects
+        inaccessible. If <varname>ProtectKernelTunables=</varname> is set,
+        <varname>MountAPIVFS=yes</varname> is implied.</para>
 
         <xi:include href="system-only.xml" xpointer="singular"/></listitem>
       </varlistentry>
@@ -1628,9 +1732,9 @@ BindReadOnlyPaths=/var/lib/systemd</programlisting>
         both privileged and unprivileged. To disable module auto-load feature please see
         <citerefentry><refentrytitle>sysctl.d</refentrytitle><manvolnum>5</manvolnum></citerefentry>
         <constant>kernel.modules_disabled</constant> mechanism and
-        <filename>/proc/sys/kernel/modules_disabled</filename> documentation.  If turned on and if running in user
-        mode, or in system mode, but without the <constant>CAP_SYS_ADMIN</constant> capability (e.g. setting
-        <varname>User=</varname>), <varname>NoNewPrivileges=yes</varname> is implied.</para>
+        <filename>/proc/sys/kernel/modules_disabled</filename> documentation. If this setting is on,
+        but the unit doesn't have the <constant>CAP_SYS_ADMIN</constant> capability (e.g. services for
+        which <varname>User=</varname> is set), <varname>NoNewPrivileges=yes</varname> is implied.</para>
 
         <xi:include href="system-only.xml" xpointer="singular"/></listitem>
       </varlistentry>
@@ -1646,7 +1750,10 @@ BindReadOnlyPaths=/var/lib/systemd</programlisting>
         system call (not to be confused with the libc API
         <citerefentry project='man-pages'><refentrytitle>syslog</refentrytitle><manvolnum>3</manvolnum></citerefentry>
         for userspace logging). The kernel exposes its log buffer to userspace via <filename>/dev/kmsg</filename> and
-        <filename>/proc/kmsg</filename>. If enabled, these are made inaccessible to all the processes in the unit.</para>
+        <filename>/proc/kmsg</filename>. If enabled, these are made inaccessible to all the processes in the unit.
+        If this setting is on, but the unit doesn't have the <constant>CAP_SYS_ADMIN</constant>
+        capability (e.g. services for which <varname>User=</varname> is set),
+        <varname>NoNewPrivileges=yes</varname> is implied.</para>
 
         <xi:include href="system-only.xml" xpointer="singular"/></listitem>
       </varlistentry>
@@ -1686,7 +1793,7 @@ BindReadOnlyPaths=/var/lib/systemd</programlisting>
         restrictions of this option. Specifically, it is recommended to combine this option with
         <varname>SystemCallArchitectures=native</varname> or similar. If running in user mode, or in system
         mode, but without the <constant>CAP_SYS_ADMIN</constant> capability (e.g. setting
-        <varname>User=nobody</varname>), <varname>NoNewPrivileges=yes</varname> is implied. By default, no
+        <varname>User=</varname>), <varname>NoNewPrivileges=yes</varname> is implied. By default, no
         restrictions apply, all address families are accessible to processes. If assigned the empty string,
         any previous address family restriction changes are undone. This setting does not affect commands
         prefixed with <literal>+</literal>.</para>
@@ -1916,7 +2023,7 @@ RestrictNamespaces=~cgroup net</programlisting>
         explicitly specify killing. This value takes precedence over the one given in
         <varname>SystemCallErrorNumber=</varname>, see below.  If running in user mode, or in system mode,
         but without the <constant>CAP_SYS_ADMIN</constant> capability (e.g. setting
-        <varname>User=nobody</varname>), <varname>NoNewPrivileges=yes</varname> is implied. This feature
+        <varname>User=</varname>), <varname>NoNewPrivileges=yes</varname> is implied. This feature
         makes use of the Secure Computing Mode 2 interfaces of the kernel ('seccomp filtering') and is useful
         for enforcing a minimal sandboxing environment. Note that the <function>execve()</function>,
         <function>exit()</function>, <function>exit_group()</function>, <function>getrlimit()</function>,
@@ -2138,7 +2245,7 @@ SystemCallErrorNumber=EPERM</programlisting>
         the special identifier <constant>native</constant>.  The special identifier <constant>native</constant>
         implicitly maps to the native architecture of the system (or more precisely: to the architecture the system
         manager is compiled for). If running in user mode, or in system mode, but without the
-        <constant>CAP_SYS_ADMIN</constant> capability (e.g. setting <varname>User=nobody</varname>),
+        <constant>CAP_SYS_ADMIN</constant> capability (e.g. setting <varname>User=</varname>),
         <varname>NoNewPrivileges=yes</varname> is implied. By default, this option is set to the empty list, i.e. no
         filtering is applied.</para>
 
@@ -2167,7 +2274,7 @@ SystemCallErrorNumber=EPERM</programlisting>
         system calls executed by the unit processes for the listed ones will be logged. If the first
         character of the list is <literal>~</literal>, the effect is inverted: all system calls except the
         listed system calls will be logged. If running in user mode, or in system mode, but without the
-        <constant>CAP_SYS_ADMIN</constant> capability (e.g. setting <varname>User=nobody</varname>),
+        <constant>CAP_SYS_ADMIN</constant> capability (e.g. setting <varname>User=</varname>),
         <varname>NoNewPrivileges=yes</varname> is implied. This feature makes use of the Secure Computing
         Mode 2 interfaces of the kernel ('seccomp filtering') and is useful for auditing or setting up a
         minimal sandboxing environment. This option may be specified more than once, in which case the filter
@@ -2186,18 +2293,24 @@ SystemCallErrorNumber=EPERM</programlisting>
       <varlistentry>
         <term><varname>Environment=</varname></term>
 
-        <listitem><para>Sets environment variables for executed processes. Takes a space-separated list of
-        variable assignments. This option may be specified more than once, in which case all listed variables
-        will be set. If the same variable is set twice, the later setting will override the earlier
-        setting. If the empty string is assigned to this option, the list of environment variables is reset,
-        all prior assignments have no effect. Variable expansion is not performed inside the strings,
-        however, specifier expansion is possible. The <literal>$</literal> character has no special
-        meaning. If you need to assign a value containing spaces or the equals sign to a variable, use double
-        quotes (") for the assignment.</para>
+        <listitem><para>Sets environment variables for executed processes. Each line is unquoted using the
+        rules described in "Quoting" section in
+        <citerefentry><refentrytitle>systemd.syntax</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+        and becomes a list of variable assignments. If you need to assign a value containing spaces or the
+        equals sign to a variable, put quotes around the whole assignment. Variable expansion is not
+        performed inside the strings and the <literal>$</literal> character has no special meaning. Specifier
+        expansion is performed, see the "Specifiers" section in
+        <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
+        </para>
 
-        <para>The names of the variables can contain ASCII letters, digits, and the underscore
-        character. Variable names cannot be empty or start with a digit. In variable values, most characters
-        are allowed, but non-printable characters are currently rejected.</para>
+        <para>This option may be specified more than once, in which case all listed variables will be set. If
+        the same variable is listed twice, the later setting will override the earlier setting. If the empty
+        string is assigned to this option, the list of environment variables is reset, all prior assignments
+        have no effect.</para>
+
+        <para>The names of the variables can contain ASCII letters, digits, and the underscore character.
+        Variable names cannot be empty or start with a digit. In variable values, most characters are
+        allowed, but non-printable characters are currently rejected.</para>
 
         <para>Example:
         <programlisting>Environment="VAR1=word1 word2" VAR2=word3 "VAR3=$word 5 6"</programlisting>
@@ -2207,10 +2320,9 @@ SystemCallErrorNumber=EPERM</programlisting>
         <literal>word3</literal>, <literal>$word 5 6</literal>.
         </para>
 
-        <para>
-        See <citerefentry
-        project='man-pages'><refentrytitle>environ</refentrytitle><manvolnum>7</manvolnum></citerefentry> for details
-        about environment variables.</para>
+        <para>See <citerefentry
+        project='man-pages'><refentrytitle>environ</refentrytitle><manvolnum>7</manvolnum></citerefentry> for
+        details about environment variables.</para>
 
         <para>Note that environment variables are not suitable for passing secrets (such as passwords, key
         material, …)  to service processes. Environment variables set for a unit are exposed to unprivileged
@@ -2304,10 +2416,10 @@ SystemCallErrorNumber=EPERM</programlisting>
         set by the service manager itself (such as <varname>$NOTIFY_SOCKET</varname> and such), or set by a PAM module
         (in case <varname>PAMName=</varname> is used).</para>
 
-        <para>
-        See <citerefentry
-        project='man-pages'><refentrytitle>environ</refentrytitle><manvolnum>7</manvolnum></citerefentry> for details
-        about environment variables.</para></listitem>
+        <para>See "Environment Variables in Spawned Processes" below for a description of how those
+        settings combine to form the inherited environment. See <citerefentry
+        project='man-pages'><refentrytitle>environ</refentrytitle><manvolnum>7</manvolnum></citerefentry> for general
+        information about environment variables.</para></listitem>
       </varlistentry>
 
     </variablelist>
@@ -2373,7 +2485,9 @@ SystemCallErrorNumber=EPERM</programlisting>
         <citerefentry><refentrytitle>systemd.socket</refentrytitle><manvolnum>5</manvolnum></citerefentry> for more
         details about named file descriptors and their ordering.</para>
 
-        <para>This setting defaults to <option>null</option>.</para></listitem>
+        <para>This setting defaults to <option>null</option>, unless
+        <varname>StandardInputText=</varname>/<varname>StandardInputData=</varname> are set, in which case it
+        defaults to <option>data</option>.</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -2383,8 +2497,8 @@ SystemCallErrorNumber=EPERM</programlisting>
         to. Takes one of <option>inherit</option>, <option>null</option>, <option>tty</option>,
         <option>journal</option>, <option>kmsg</option>, <option>journal+console</option>,
         <option>kmsg+console</option>, <option>file:<replaceable>path</replaceable></option>,
-        <option>append:<replaceable>path</replaceable></option>, <option>socket</option> or
-        <option>fd:<replaceable>name</replaceable></option>.</para>
+        <option>append:<replaceable>path</replaceable></option>, <option>truncate:<replaceable>path</replaceable></option>,
+        <option>socket</option> or <option>fd:<replaceable>name</replaceable></option>.</para>
 
         <para><option>inherit</option> duplicates the file descriptor of standard input for standard output.</para>
 
@@ -2423,6 +2537,21 @@ SystemCallErrorNumber=EPERM</programlisting>
         <para><option>append:<replaceable>path</replaceable></option> is similar to
         <option>file:<replaceable>path</replaceable></option> above, but it opens the file in append mode.
         </para>
+
+        <para><option>truncate:<replaceable>path</replaceable></option> is similar to
+        <option>file:<replaceable>path</replaceable></option> above, but it truncates the file when opening
+        it. For units with multiple command lines, e.g. <varname>Type=oneshot</varname> services with
+        multiple <varname>ExecStart=</varname>, or services with <varname>ExecCondition=</varname>,
+        <varname>ExecStartPre=</varname> or <varname>ExecStartPost=</varname>, the output file is reopened
+        and therefore re-truncated for each command line. If the output file is truncated while another
+        process still has the file open, e.g. by an <varname>ExecReload=</varname> running concurrently with
+        an <varname>ExecStart=</varname>, and the other process continues writing to the file without
+        adjusting its offset, then the space between the file pointers of the two processes may be filled
+        with <constant>NUL</constant> bytes, producing a sparse file. Thus,
+        <option>truncate:<replaceable>path</replaceable></option> is typically only useful for units where
+        only one process runs at a time, such as services with a single <varname>ExecStart=</varname> and no
+        <varname>ExecStartPost=</varname>, <varname>ExecReload=</varname>, <varname>ExecStop=</varname> or
+        similar.</para>
 
         <para><option>socket</option> connects standard output to a socket acquired via socket activation. The
         semantics are similar to the same option of <varname>StandardInput=</varname>, see above.</para>
@@ -2472,9 +2601,11 @@ SystemCallErrorNumber=EPERM</programlisting>
         <term><varname>StandardInputText=</varname></term>
         <term><varname>StandardInputData=</varname></term>
 
-        <listitem><para>Configures arbitrary textual or binary data to pass via file descriptor 0 (STDIN) to the
-        executed processes. These settings have no effect unless <varname>StandardInput=</varname> is set to
-        <option>data</option>. Use this option to embed process input data directly in the unit file.</para>
+        <listitem><para>Configures arbitrary textual or binary data to pass via file descriptor 0 (STDIN) to
+        the executed processes. These settings have no effect unless <varname>StandardInput=</varname> is set
+        to <option>data</option> (which is the default if <varname>StandardInput=</varname> is not set
+        otherwise, but <varname>StandardInputText=</varname>/<varname>StandardInputData=</varname> is). Use
+        this option to embed process input data directly in the unit file.</para>
 
         <para><varname>StandardInputText=</varname> accepts arbitrary textual data. C-style escapes for special
         characters as well as the usual <literal>%</literal>-specifiers are resolved. Each time this setting is used
@@ -2728,8 +2859,7 @@ StandardInputData=SWNrIHNpdHplIGRhIHVuJyBlc3NlIEtsb3BzLAp1ZmYgZWVtYWwga2xvcHAncy
         <varname>ExecStart=</varname> command line use <literal>${CREDENTIALS_DIRECTORY}/mycred</literal>,
         e.g. <literal>ExecStart=cat ${CREDENTIALS_DIRECTORY}/mycred</literal>.</para>
 
-        <para>Currently, an accumulated credential size limit of 1M bytes per unit is
-        enforced.</para>
+        <para>Currently, an accumulated credential size limit of 1 MB per unit is enforced.</para>
 
         <para>If referencing an <constant>AF_UNIX</constant> stream socket to connect to, the connection will
         originate from an abstract namespace socket, that includes information about the unit and the
@@ -2809,7 +2939,7 @@ StandardInputData=SWNrIHNpdHplIGRhIHVuJyBlc3NlIEtsb3BzLAp1ZmYgZWVtYWwga2xvcHAncy
   </refsect1>
 
   <refsect1>
-    <title>Environment variables in spawned processes</title>
+    <title>Environment Variables in Spawned Processes</title>
 
     <para>Processes started by the service manager are executed with an environment variable block assembled from
     multiple sources. Processes started by the system service manager generally do not inherit environment variables
@@ -2822,410 +2952,439 @@ StandardInputData=SWNrIHNpdHplIGRhIHVuJyBlc3NlIEtsb3BzLAp1ZmYgZWVtYWwga2xvcHAncy
     <itemizedlist>
       <listitem><para>Variables globally configured for the service manager, using the
       <varname>DefaultEnvironment=</varname> setting in
-      <citerefentry><refentrytitle>systemd-system.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>, the kernel command line option <varname>systemd.setenv=</varname> (see
-    <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>) or via
-      <command>systemctl set-environment</command> (see <citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>).</para></listitem>
+      <citerefentry><refentrytitle>systemd-system.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
+      the kernel command line option <varname>systemd.setenv=</varname> understood by
+      <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>, or via
+      <citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+      <command>set-environment</command> verb.</para></listitem>
 
-      <listitem><para>Variables defined by the service manager itself (see the list below)</para></listitem>
+      <listitem><para>Variables defined by the service manager itself (see the list below).</para></listitem>
 
-      <listitem><para>Variables set in the service manager's own environment variable block (subject to <varname>PassEnvironment=</varname> for the system service manager)</para></listitem>
+      <listitem><para>Variables set in the service manager's own environment variable block (subject to
+      <varname>PassEnvironment=</varname> for the system service manager).</para></listitem>
 
-      <listitem><para>Variables set via <varname>Environment=</varname> in the unit file</para></listitem>
+      <listitem><para>Variables set via <varname>Environment=</varname> in the unit file.</para></listitem>
 
-      <listitem><para>Variables read from files specified via <varname>EnvironmentFile=</varname> in the unit file</para></listitem>
+      <listitem><para>Variables read from files specified via <varname>EnvironmentFile=</varname> in the unit
+      file.</para></listitem>
 
       <listitem><para>Variables set by any PAM modules in case <varname>PAMName=</varname> is in effect,
       cf. <citerefentry
-      project='man-pages'><refentrytitle>pam_env</refentrytitle><manvolnum>8</manvolnum></citerefentry></para></listitem>
+      project='man-pages'><refentrytitle>pam_env</refentrytitle><manvolnum>8</manvolnum></citerefentry>.
+      </para></listitem>
     </itemizedlist>
 
-    <para>If the same environment variables are set by multiple of these sources, the later source — according to the
-    order of the list above — wins. Note that as final step all variables listed in
-    <varname>UnsetEnvironment=</varname> are removed again from the compiled environment variable list, immediately
+    <para>If the same environment variable is set by multiple of these sources, the later source — according
+    to the order of the list above — wins. Note that as the final step all variables listed in
+    <varname>UnsetEnvironment=</varname> are removed from the compiled environment variable list, immediately
     before it is passed to the executed process.</para>
 
-    <para>The following environment variables are set or propagated by the service manager for each invoked
-    process:</para>
+    <para>The general philosophy is to expose a small curated list of environment variables to processes.
+    Services started by the system manager (PID 1) will be started, without additional service-specific
+    configuration, with just a few environment variables. The user manager inherits environment variables as
+    any other system service, but in addition may receive additional environment variables from PAM, and,
+    typically, additional imported variables when the user starts a graphical session. It is recommended to
+    keep the environment blocks in both the system and user managers managers lean. Importing all variables
+    inherited by the graphical session or by one of the user shells is strongly discouraged.</para>
 
-    <variablelist class='environment-variables'>
-      <varlistentry>
-        <term><varname>$PATH</varname></term>
+    <para>Hint: <command>systemd-run -P env</command> and <command>systemd-run --user -P env</command> print
+    the effective system and user service environment blocks.</para>
 
-        <listitem><para>Colon-separated list of directories to use when launching
-        executables. <command>systemd</command> uses a fixed value of
-        <literal><filename>/usr/local/sbin</filename>:<filename>/usr/local/bin</filename>:<filename>/usr/sbin</filename>:<filename>/usr/bin</filename></literal>
-        in the system manager. When compiled for systems with "unmerged /usr" (<filename>/bin</filename> is
-        not a symlink to <filename>/usr/bin</filename>),
-        <literal>:<filename>/sbin</filename>:<filename>/bin</filename></literal> is appended. In case of the
-        the user manager, a different path may be configured by the distribution. It is recommended to not
-        rely on the order of entries, and have only one program with a given name in
-        <varname>$PATH</varname>.</para></listitem>
-      </varlistentry>
+    <refsect2>
+      <title>Environment Variables Set or Propagated by the Service Manager</title>
 
-      <varlistentry>
-        <term><varname>$LANG</varname></term>
+      <para>The following environment variables are propagated by the service manager or generated internally
+      for each invoked process:</para>
 
-        <listitem><para>Locale. Can be set in
-        <citerefentry project='man-pages'><refentrytitle>locale.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
-        or on the kernel command line (see
-        <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry>
-        and
-        <citerefentry><refentrytitle>kernel-command-line</refentrytitle><manvolnum>7</manvolnum></citerefentry>).
-        </para></listitem>
-      </varlistentry>
+      <variablelist class='environment-variables'>
+        <varlistentry>
+          <term><varname>$PATH</varname></term>
 
-      <varlistentry>
-        <term><varname>$USER</varname></term>
-        <term><varname>$LOGNAME</varname></term>
-        <term><varname>$HOME</varname></term>
-        <term><varname>$SHELL</varname></term>
+          <listitem><para>Colon-separated list of directories to use when launching
+          executables. <command>systemd</command> uses a fixed value of
+          <literal><filename>/usr/local/sbin</filename>:<filename>/usr/local/bin</filename>:<filename>/usr/sbin</filename>:<filename>/usr/bin</filename></literal>
+          in the system manager. When compiled for systems with "unmerged <filename>/usr/</filename>"
+          (<filename>/bin</filename> is not a symlink to <filename>/usr/bin</filename>),
+          <literal>:<filename>/sbin</filename>:<filename>/bin</filename></literal> is appended. In case of
+          the the user manager, a different path may be configured by the distribution. It is recommended to
+          not rely on the order of entries, and have only one program with a given name in
+          <varname>$PATH</varname>.</para></listitem>
+        </varlistentry>
 
-        <listitem><para>User name (twice), home directory, and the
-        login shell. The variables are set for the units that have
-        <varname>User=</varname> set, which includes user
-        <command>systemd</command> instances. See
-        <citerefentry project='die-net'><refentrytitle>passwd</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
-        </para></listitem>
-      </varlistentry>
+        <varlistentry>
+          <term><varname>$LANG</varname></term>
 
-      <varlistentry>
-        <term><varname>$INVOCATION_ID</varname></term>
+          <listitem><para>Locale. Can be set in <citerefentry
+          project='man-pages'><refentrytitle>locale.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+          or on the kernel command line (see
+          <citerefentry><refentrytitle>systemd</refentrytitle><manvolnum>1</manvolnum></citerefentry> and
+          <citerefentry><refentrytitle>kernel-command-line</refentrytitle><manvolnum>7</manvolnum></citerefentry>).
+          </para></listitem>
+        </varlistentry>
 
-        <listitem><para>Contains a randomized, unique 128bit ID identifying each runtime cycle of the unit, formatted
-        as 32 character hexadecimal string. A new ID is assigned each time the unit changes from an inactive state into
-        an activating or active state, and may be used to identify this specific runtime cycle, in particular in data
-        stored offline, such as the journal. The same ID is passed to all processes run as part of the
-        unit.</para></listitem>
-      </varlistentry>
+        <varlistentry>
+          <term><varname>$USER</varname></term>
+          <term><varname>$LOGNAME</varname></term>
+          <term><varname>$HOME</varname></term>
+          <term><varname>$SHELL</varname></term>
 
-      <varlistentry>
-        <term><varname>$XDG_RUNTIME_DIR</varname></term>
+          <listitem><para>User name (twice), home directory, and the
+          login shell. The variables are set for the units that have
+          <varname>User=</varname> set, which includes user
+          <command>systemd</command> instances. See
+          <citerefentry project='die-net'><refentrytitle>passwd</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
+          </para></listitem>
+        </varlistentry>
 
-        <listitem><para>The directory to use for runtime objects (such as IPC objects) and volatile state. Set for all
-        services run by the user <command>systemd</command> instance, as well as any system services that use
-        <varname>PAMName=</varname> with a PAM stack that includes <command>pam_systemd</command>. See below and
-        <citerefentry><refentrytitle>pam_systemd</refentrytitle><manvolnum>8</manvolnum></citerefentry> for more
-        information.</para></listitem>
-      </varlistentry>
+        <varlistentry>
+          <term><varname>$INVOCATION_ID</varname></term>
 
-      <varlistentry>
-        <term><varname>$RUNTIME_DIRECTORY</varname></term>
-        <term><varname>$STATE_DIRECTORY</varname></term>
-        <term><varname>$CACHE_DIRECTORY</varname></term>
-        <term><varname>$LOGS_DIRECTORY</varname></term>
-        <term><varname>$CONFIGURATION_DIRECTORY</varname></term>
+          <listitem><para>Contains a randomized, unique 128bit ID identifying each runtime cycle of the unit, formatted
+          as 32 character hexadecimal string. A new ID is assigned each time the unit changes from an inactive state into
+          an activating or active state, and may be used to identify this specific runtime cycle, in particular in data
+          stored offline, such as the journal. The same ID is passed to all processes run as part of the
+          unit.</para></listitem>
+        </varlistentry>
 
-        <listitem><para>Absolute paths to the directories defined with
-        <varname>RuntimeDirectory=</varname>, <varname>StateDirectory=</varname>,
-        <varname>CacheDirectory=</varname>, <varname>LogsDirectory=</varname>, and
-        <varname>ConfigurationDirectory=</varname> when those settings are used.</para>
-        </listitem>
-      </varlistentry>
+        <varlistentry>
+          <term><varname>$XDG_RUNTIME_DIR</varname></term>
 
-      <varlistentry>
-        <term><varname>$CREDENTIALS_DIRECTORY</varname></term>
+          <listitem><para>The directory to use for runtime objects (such as IPC objects) and volatile state. Set for all
+          services run by the user <command>systemd</command> instance, as well as any system services that use
+          <varname>PAMName=</varname> with a PAM stack that includes <command>pam_systemd</command>. See below and
+          <citerefentry><refentrytitle>pam_systemd</refentrytitle><manvolnum>8</manvolnum></citerefentry> for more
+          information.</para></listitem>
+        </varlistentry>
 
-        <listitem><para>An absolute path to the per-unit directory with credentials configured via
-        <varname>LoadCredential=</varname>/<varname>SetCredential=</varname>. The directory is marked
-        read-only and is placed in unswappable memory (if supported and permitted), and is only accessible to
-        the UID associated with the unit via <varname>User=</varname> or <varname>DynamicUser=</varname> (and
-        the superuser).</para></listitem>
-      </varlistentry>
+        <varlistentry>
+          <term><varname>$RUNTIME_DIRECTORY</varname></term>
+          <term><varname>$STATE_DIRECTORY</varname></term>
+          <term><varname>$CACHE_DIRECTORY</varname></term>
+          <term><varname>$LOGS_DIRECTORY</varname></term>
+          <term><varname>$CONFIGURATION_DIRECTORY</varname></term>
 
-      <varlistentry>
-        <term><varname>$MAINPID</varname></term>
+          <listitem><para>Absolute paths to the directories defined with
+          <varname>RuntimeDirectory=</varname>, <varname>StateDirectory=</varname>,
+          <varname>CacheDirectory=</varname>, <varname>LogsDirectory=</varname>, and
+          <varname>ConfigurationDirectory=</varname> when those settings are used.</para>
+          </listitem>
+        </varlistentry>
 
-        <listitem><para>The PID of the unit's main process if it is
-        known. This is only set for control processes as invoked by
-        <varname>ExecReload=</varname> and similar. </para></listitem>
-      </varlistentry>
+        <varlistentry>
+          <term><varname>$CREDENTIALS_DIRECTORY</varname></term>
 
-      <varlistentry>
-        <term><varname>$MANAGERPID</varname></term>
+          <listitem><para>An absolute path to the per-unit directory with credentials configured via
+          <varname>LoadCredential=</varname>/<varname>SetCredential=</varname>. The directory is marked
+          read-only and is placed in unswappable memory (if supported and permitted), and is only accessible to
+          the UID associated with the unit via <varname>User=</varname> or <varname>DynamicUser=</varname> (and
+          the superuser).</para></listitem>
+        </varlistentry>
 
-        <listitem><para>The PID of the user <command>systemd</command>
-        instance, set for processes spawned by it. </para></listitem>
-      </varlistentry>
+        <varlistentry>
+          <term><varname>$MAINPID</varname></term>
 
-      <varlistentry>
-        <term><varname>$LISTEN_FDS</varname></term>
-        <term><varname>$LISTEN_PID</varname></term>
-        <term><varname>$LISTEN_FDNAMES</varname></term>
+          <listitem><para>The PID of the unit's main process if it is
+          known. This is only set for control processes as invoked by
+          <varname>ExecReload=</varname> and similar. </para></listitem>
+        </varlistentry>
 
-        <listitem><para>Information about file descriptors passed to a
-        service for socket activation. See
-        <citerefentry><refentrytitle>sd_listen_fds</refentrytitle><manvolnum>3</manvolnum></citerefentry>.
-        </para></listitem>
-      </varlistentry>
+        <varlistentry>
+          <term><varname>$MANAGERPID</varname></term>
 
-      <varlistentry>
-        <term><varname>$NOTIFY_SOCKET</varname></term>
+          <listitem><para>The PID of the user <command>systemd</command>
+          instance, set for processes spawned by it. </para></listitem>
+        </varlistentry>
 
-        <listitem><para>The socket
-        <function>sd_notify()</function> talks to. See
-        <citerefentry><refentrytitle>sd_notify</refentrytitle><manvolnum>3</manvolnum></citerefentry>.
-        </para></listitem>
-      </varlistentry>
+        <varlistentry>
+          <term><varname>$LISTEN_FDS</varname></term>
+          <term><varname>$LISTEN_PID</varname></term>
+          <term><varname>$LISTEN_FDNAMES</varname></term>
 
-      <varlistentry>
-        <term><varname>$WATCHDOG_PID</varname></term>
-        <term><varname>$WATCHDOG_USEC</varname></term>
+          <listitem><para>Information about file descriptors passed to a
+          service for socket activation. See
+          <citerefentry><refentrytitle>sd_listen_fds</refentrytitle><manvolnum>3</manvolnum></citerefentry>.
+          </para></listitem>
+        </varlistentry>
 
-        <listitem><para>Information about watchdog keep-alive notifications. See
-        <citerefentry><refentrytitle>sd_watchdog_enabled</refentrytitle><manvolnum>3</manvolnum></citerefentry>.
-        </para></listitem>
-      </varlistentry>
+        <varlistentry>
+          <term><varname>$NOTIFY_SOCKET</varname></term>
 
-      <varlistentry>
-        <term><varname>$TERM</varname></term>
+          <listitem><para>The socket
+          <function>sd_notify()</function> talks to. See
+          <citerefentry><refentrytitle>sd_notify</refentrytitle><manvolnum>3</manvolnum></citerefentry>.
+          </para></listitem>
+        </varlistentry>
 
-        <listitem><para>Terminal type, set only for units connected to
-        a terminal (<varname>StandardInput=tty</varname>,
-        <varname>StandardOutput=tty</varname>, or
-        <varname>StandardError=tty</varname>). See
-        <citerefentry project='man-pages'><refentrytitle>termcap</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
-        </para></listitem>
-      </varlistentry>
+        <varlistentry>
+          <term><varname>$WATCHDOG_PID</varname></term>
+          <term><varname>$WATCHDOG_USEC</varname></term>
 
-      <varlistentry>
-        <term><varname>$LOG_NAMESPACE</varname></term>
+          <listitem><para>Information about watchdog keep-alive notifications. See
+          <citerefentry><refentrytitle>sd_watchdog_enabled</refentrytitle><manvolnum>3</manvolnum></citerefentry>.
+          </para></listitem>
+        </varlistentry>
 
-        <listitem><para>Contains the name of the selected logging namespace when the
-        <varname>LogNamespace=</varname> service setting is used.</para></listitem>
-      </varlistentry>
+        <varlistentry>
+          <term><varname>$SYSTEMD_EXEC_PID</varname></term>
 
-      <varlistentry>
-        <term><varname>$JOURNAL_STREAM</varname></term>
+          <listitem><para>The PID of the unit process (e.g. process invoked by
+          <varname>ExecStart=</varname>). The child process can use this information to determine
+          whether the process is directly invoked by the service manager or indirectly as a child of
+          another process by comparing this value with the current PID (as similar to the scheme used in
+          <citerefentry><refentrytitle>sd_listen_fds</refentrytitle><manvolnum>3</manvolnum></citerefentry>
+          with <varname>$LISTEN_PID</varname> and <varname>$LISTEN_FDS</varname>).</para></listitem>
+        </varlistentry>
 
-        <listitem><para>If the standard output or standard error output of the executed processes are connected to the
-        journal (for example, by setting <varname>StandardError=journal</varname>) <varname>$JOURNAL_STREAM</varname>
-        contains the device and inode numbers of the connection file descriptor, formatted in decimal, separated by a
-        colon (<literal>:</literal>). This permits invoked processes to safely detect whether their standard output or
-        standard error output are connected to the journal. The device and inode numbers of the file descriptors should
-        be compared with the values set in the environment variable to determine whether the process output is still
-        connected to the journal. Note that it is generally not sufficient to only check whether
-        <varname>$JOURNAL_STREAM</varname> is set at all as services might invoke external processes replacing their
-        standard output or standard error output, without unsetting the environment variable.</para>
+        <varlistentry>
+          <term><varname>$TERM</varname></term>
 
-        <para>If both standard output and standard error of the executed processes are connected to the journal via a
-        stream socket, this environment variable will contain information about the standard error stream, as that's
-        usually the preferred destination for log data. (Note that typically the same stream is used for both standard
-        output and standard error, hence very likely the environment variable contains device and inode information
-        matching both stream file descriptors.)</para>
+          <listitem><para>Terminal type, set only for units connected to
+          a terminal (<varname>StandardInput=tty</varname>,
+          <varname>StandardOutput=tty</varname>, or
+          <varname>StandardError=tty</varname>). See
+          <citerefentry project='man-pages'><refentrytitle>termcap</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
+          </para></listitem>
+        </varlistentry>
 
-        <para>This environment variable is primarily useful to allow services to optionally upgrade their used log
-        protocol to the native journal protocol (using
-        <citerefentry><refentrytitle>sd_journal_print</refentrytitle><manvolnum>3</manvolnum></citerefentry> and other
-        functions) if their standard output or standard error output is connected to the journal anyway, thus enabling
-        delivery of structured metadata along with logged messages.</para></listitem>
-      </varlistentry>
+        <varlistentry>
+          <term><varname>$LOG_NAMESPACE</varname></term>
 
-      <varlistentry>
-        <term><varname>$SERVICE_RESULT</varname></term>
+          <listitem><para>Contains the name of the selected logging namespace when the
+          <varname>LogNamespace=</varname> service setting is used.</para></listitem>
+        </varlistentry>
 
-        <listitem><para>Only defined for the service unit type, this environment variable is passed to all
-        <varname>ExecStop=</varname> and <varname>ExecStopPost=</varname> processes, and encodes the service
-        "result". Currently, the following values are defined:</para>
+        <varlistentry>
+          <term><varname>$JOURNAL_STREAM</varname></term>
 
-        <table>
-          <title>Defined <varname>$SERVICE_RESULT</varname> values</title>
-          <tgroup cols='2'>
-            <colspec colname='result'/>
-            <colspec colname='meaning'/>
-            <thead>
-              <row>
-                <entry>Value</entry>
-                <entry>Meaning</entry>
-              </row>
-            </thead>
+          <listitem><para>If the standard output or standard error output of the executed processes are connected to the
+          journal (for example, by setting <varname>StandardError=journal</varname>) <varname>$JOURNAL_STREAM</varname>
+          contains the device and inode numbers of the connection file descriptor, formatted in decimal, separated by a
+          colon (<literal>:</literal>). This permits invoked processes to safely detect whether their standard output or
+          standard error output are connected to the journal. The device and inode numbers of the file descriptors should
+          be compared with the values set in the environment variable to determine whether the process output is still
+          connected to the journal. Note that it is generally not sufficient to only check whether
+          <varname>$JOURNAL_STREAM</varname> is set at all as services might invoke external processes replacing their
+          standard output or standard error output, without unsetting the environment variable.</para>
 
-            <tbody>
-              <row>
-                <entry><literal>success</literal></entry>
-                <entry>The service ran successfully and exited cleanly.</entry>
-              </row>
-              <row>
-                <entry><literal>protocol</literal></entry>
-                <entry>A protocol violation occurred: the service did not take the steps required by its unit configuration (specifically what is configured in its <varname>Type=</varname> setting).</entry>
-              </row>
-              <row>
-                <entry><literal>timeout</literal></entry>
-                <entry>One of the steps timed out.</entry>
-              </row>
-              <row>
-                <entry><literal>exit-code</literal></entry>
-                <entry>Service process exited with a non-zero exit code; see <varname>$EXIT_CODE</varname> below for the actual exit code returned.</entry>
-              </row>
-              <row>
-                <entry><literal>signal</literal></entry>
-                <entry>A service process was terminated abnormally by a signal, without dumping core. See <varname>$EXIT_CODE</varname> below for the actual signal causing the termination.</entry>
-              </row>
-              <row>
-                <entry><literal>core-dump</literal></entry>
-                <entry>A service process terminated abnormally with a signal and dumped core. See <varname>$EXIT_CODE</varname> below for the signal causing the termination.</entry>
-              </row>
-              <row>
-                <entry><literal>watchdog</literal></entry>
-                <entry>Watchdog keep-alive ping was enabled for the service, but the deadline was missed.</entry>
-              </row>
-              <row>
-                <entry><literal>start-limit-hit</literal></entry>
-                <entry>A start limit was defined for the unit and it was hit, causing the unit to fail to start. See <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>'s <varname>StartLimitIntervalSec=</varname> and <varname>StartLimitBurst=</varname> for details.</entry>
-              </row>
-              <row>
-                <entry><literal>resources</literal></entry>
-                <entry>A catch-all condition in case a system operation failed.</entry>
-              </row>
-            </tbody>
-          </tgroup>
-        </table>
+          <para>If both standard output and standard error of the executed processes are connected to the journal via a
+          stream socket, this environment variable will contain information about the standard error stream, as that's
+          usually the preferred destination for log data. (Note that typically the same stream is used for both standard
+          output and standard error, hence very likely the environment variable contains device and inode information
+          matching both stream file descriptors.)</para>
 
-        <para>This environment variable is useful to monitor failure or successful termination of a service. Even
-        though this variable is available in both <varname>ExecStop=</varname> and <varname>ExecStopPost=</varname>, it
-        is usually a better choice to place monitoring tools in the latter, as the former is only invoked for services
-        that managed to start up correctly, and the latter covers both services that failed during their start-up and
-        those which failed during their runtime.</para></listitem>
-      </varlistentry>
+          <para>This environment variable is primarily useful to allow services to optionally upgrade their used log
+          protocol to the native journal protocol (using
+          <citerefentry><refentrytitle>sd_journal_print</refentrytitle><manvolnum>3</manvolnum></citerefentry> and other
+          functions) if their standard output or standard error output is connected to the journal anyway, thus enabling
+          delivery of structured metadata along with logged messages.</para></listitem>
+        </varlistentry>
 
-      <varlistentry>
-        <term><varname>$EXIT_CODE</varname></term>
-        <term><varname>$EXIT_STATUS</varname></term>
+        <varlistentry>
+          <term><varname>$SERVICE_RESULT</varname></term>
 
-        <listitem><para>Only defined for the service unit type, these environment variables are passed to all
-        <varname>ExecStop=</varname>, <varname>ExecStopPost=</varname> processes and contain exit status/code
-        information of the main process of the service. For the precise definition of the exit code and status, see
-        <citerefentry><refentrytitle>wait</refentrytitle><manvolnum>2</manvolnum></citerefentry>. <varname>$EXIT_CODE</varname>
-        is one of <literal>exited</literal>, <literal>killed</literal>,
-        <literal>dumped</literal>. <varname>$EXIT_STATUS</varname> contains the numeric exit code formatted as string
-        if <varname>$EXIT_CODE</varname> is <literal>exited</literal>, and the signal name in all other cases. Note
-        that these environment variables are only set if the service manager succeeded to start and identify the main
-        process of the service.</para>
+          <listitem><para>Only defined for the service unit type, this environment variable is passed to all
+          <varname>ExecStop=</varname> and <varname>ExecStopPost=</varname> processes, and encodes the service
+          "result". Currently, the following values are defined:</para>
 
-        <table>
-          <title>Summary of possible service result variable values</title>
-          <tgroup cols='3'>
-            <colspec colname='result' />
-            <colspec colname='code' />
-            <colspec colname='status' />
-            <thead>
-              <row>
-                <entry><varname>$SERVICE_RESULT</varname></entry>
-                <entry><varname>$EXIT_CODE</varname></entry>
-                <entry><varname>$EXIT_STATUS</varname></entry>
-              </row>
-            </thead>
+          <table>
+            <title>Defined <varname>$SERVICE_RESULT</varname> values</title>
+            <tgroup cols='2'>
+              <colspec colname='result'/>
+              <colspec colname='meaning'/>
+              <thead>
+                <row>
+                  <entry>Value</entry>
+                  <entry>Meaning</entry>
+                </row>
+              </thead>
 
-            <tbody>
-              <row>
-                <entry morerows="1" valign="top"><literal>success</literal></entry>
-                <entry valign="top"><literal>killed</literal></entry>
-                <entry><literal>HUP</literal>, <literal>INT</literal>, <literal>TERM</literal>, <literal>PIPE</literal></entry>
-              </row>
-              <row>
-                <entry valign="top"><literal>exited</literal></entry>
-                <entry><literal>0</literal></entry>
-              </row>
-              <row>
-                <entry morerows="1" valign="top"><literal>protocol</literal></entry>
-                <entry valign="top">not set</entry>
-                <entry>not set</entry>
-              </row>
-              <row>
-                <entry><literal>exited</literal></entry>
-                <entry><literal>0</literal></entry>
-              </row>
-              <row>
-                <entry morerows="1" valign="top"><literal>timeout</literal></entry>
-                <entry valign="top"><literal>killed</literal></entry>
-                <entry><literal>TERM</literal>, <literal>KILL</literal></entry>
-              </row>
-              <row>
-                <entry valign="top"><literal>exited</literal></entry>
-                <entry><literal>0</literal>, <literal>1</literal>, <literal>2</literal>, <literal
-                >3</literal>, …, <literal>255</literal></entry>
-              </row>
-              <row>
-                <entry valign="top"><literal>exit-code</literal></entry>
-                <entry valign="top"><literal>exited</literal></entry>
-                <entry><literal>1</literal>, <literal>2</literal>, <literal
-                >3</literal>, …, <literal>255</literal></entry>
-              </row>
-              <row>
-                <entry valign="top"><literal>signal</literal></entry>
-                <entry valign="top"><literal>killed</literal></entry>
-                <entry><literal>HUP</literal>, <literal>INT</literal>, <literal>KILL</literal>, …</entry>
-              </row>
-              <row>
-                <entry valign="top"><literal>core-dump</literal></entry>
-                <entry valign="top"><literal>dumped</literal></entry>
-                <entry><literal>ABRT</literal>, <literal>SEGV</literal>, <literal>QUIT</literal>, …</entry>
-              </row>
-              <row>
-                <entry morerows="2" valign="top"><literal>watchdog</literal></entry>
-                <entry><literal>dumped</literal></entry>
-                <entry><literal>ABRT</literal></entry>
-              </row>
-              <row>
-                <entry><literal>killed</literal></entry>
-                <entry><literal>TERM</literal>, <literal>KILL</literal></entry>
-              </row>
-              <row>
-                <entry><literal>exited</literal></entry>
-                <entry><literal>0</literal>, <literal>1</literal>, <literal>2</literal>, <literal
-                >3</literal>, …, <literal>255</literal></entry>
-              </row>
-              <row>
-                <entry valign="top"><literal>exec-condition</literal></entry>
-                <entry><literal>exited</literal></entry>
-                <entry><literal>1</literal>, <literal>2</literal>, <literal>3</literal>, <literal
-                >4</literal>, …, <literal>254</literal></entry>
-              </row>
-              <row>
-                <entry valign="top"><literal>oom-kill</literal></entry>
-                <entry valign="top"><literal>killed</literal></entry>
-                <entry><literal>TERM</literal>, <literal>KILL</literal></entry>
-              </row>
-              <row>
-                <entry><literal>start-limit-hit</literal></entry>
-                <entry>not set</entry>
-                <entry>not set</entry>
-              </row>
-              <row>
-                <entry><literal>resources</literal></entry>
-                <entry>any of the above</entry>
-                <entry>any of the above</entry>
-              </row>
-              <row>
-                <entry namest="results" nameend="status">Note: the process may be also terminated by a signal not sent by systemd. In particular the process may send an arbitrary signal to itself in a handler for any of the non-maskable signals. Nevertheless, in the <literal>timeout</literal> and <literal>watchdog</literal> rows above only the signals that systemd sends have been included. Moreover, using <varname>SuccessExitStatus=</varname> additional exit statuses may be declared to indicate clean termination, which is not reflected by this table.</entry>
-              </row>
-            </tbody>
-          </tgroup>
-        </table>
+              <tbody>
+                <row>
+                  <entry><literal>success</literal></entry>
+                  <entry>The service ran successfully and exited cleanly.</entry>
+                </row>
+                <row>
+                  <entry><literal>protocol</literal></entry>
+                  <entry>A protocol violation occurred: the service did not take the steps required by its unit configuration (specifically what is configured in its <varname>Type=</varname> setting).</entry>
+                </row>
+                <row>
+                  <entry><literal>timeout</literal></entry>
+                  <entry>One of the steps timed out.</entry>
+                </row>
+                <row>
+                  <entry><literal>exit-code</literal></entry>
+                  <entry>Service process exited with a non-zero exit code; see <varname>$EXIT_CODE</varname> below for the actual exit code returned.</entry>
+                </row>
+                <row>
+                  <entry><literal>signal</literal></entry>
+                  <entry>A service process was terminated abnormally by a signal, without dumping core. See <varname>$EXIT_CODE</varname> below for the actual signal causing the termination.</entry>
+                </row>
+                <row>
+                  <entry><literal>core-dump</literal></entry>
+                  <entry>A service process terminated abnormally with a signal and dumped core. See <varname>$EXIT_CODE</varname> below for the signal causing the termination.</entry>
+                </row>
+                <row>
+                  <entry><literal>watchdog</literal></entry>
+                  <entry>Watchdog keep-alive ping was enabled for the service, but the deadline was missed.</entry>
+                </row>
+                <row>
+                  <entry><literal>start-limit-hit</literal></entry>
+                  <entry>A start limit was defined for the unit and it was hit, causing the unit to fail to start. See <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>'s <varname>StartLimitIntervalSec=</varname> and <varname>StartLimitBurst=</varname> for details.</entry>
+                </row>
+                <row>
+                  <entry><literal>resources</literal></entry>
+                  <entry>A catch-all condition in case a system operation failed.</entry>
+                </row>
+              </tbody>
+            </tgroup>
+          </table>
 
-        </listitem>
-      </varlistentry>
+          <para>This environment variable is useful to monitor failure or successful termination of a service. Even
+          though this variable is available in both <varname>ExecStop=</varname> and <varname>ExecStopPost=</varname>, it
+          is usually a better choice to place monitoring tools in the latter, as the former is only invoked for services
+          that managed to start up correctly, and the latter covers both services that failed during their start-up and
+          those which failed during their runtime.</para></listitem>
+        </varlistentry>
 
-      <varlistentry>
-        <term><varname>$PIDFILE</varname></term>
+        <varlistentry>
+          <term><varname>$EXIT_CODE</varname></term>
+          <term><varname>$EXIT_STATUS</varname></term>
 
-        <listitem><para>The path to the configured PID file, in case the process is forked off on behalf of a
-        service that uses the <varname>PIDFile=</varname> setting, see
-        <citerefentry><refentrytitle>systemd.service</refentrytitle><manvolnum>5</manvolnum></citerefentry>
-        for details. Service code may use this environment variable to automatically generate a PID file at
-        the location configured in the unit file. This field is set to an absolute path in the file
-        system.</para></listitem>
-      </varlistentry>
+          <listitem><para>Only defined for the service unit type, these environment variables are passed to all
+          <varname>ExecStop=</varname>, <varname>ExecStopPost=</varname> processes and contain exit status/code
+          information of the main process of the service. For the precise definition of the exit code and status, see
+          <citerefentry><refentrytitle>wait</refentrytitle><manvolnum>2</manvolnum></citerefentry>. <varname>$EXIT_CODE</varname>
+          is one of <literal>exited</literal>, <literal>killed</literal>,
+          <literal>dumped</literal>. <varname>$EXIT_STATUS</varname> contains the numeric exit code formatted as string
+          if <varname>$EXIT_CODE</varname> is <literal>exited</literal>, and the signal name in all other cases. Note
+          that these environment variables are only set if the service manager succeeded to start and identify the main
+          process of the service.</para>
 
-    </variablelist>
+          <table>
+            <title>Summary of possible service result variable values</title>
+            <tgroup cols='3'>
+              <colspec colname='result' />
+              <colspec colname='code' />
+              <colspec colname='status' />
+              <thead>
+                <row>
+                  <entry><varname>$SERVICE_RESULT</varname></entry>
+                  <entry><varname>$EXIT_CODE</varname></entry>
+                  <entry><varname>$EXIT_STATUS</varname></entry>
+                </row>
+              </thead>
 
-    <para>For system services, when <varname>PAMName=</varname> is enabled and <command>pam_systemd</command> is part
-    of the selected PAM stack, additional environment variables defined by systemd may be set for
-    services. Specifically, these are <varname>$XDG_SEAT</varname>, <varname>$XDG_VTNR</varname>, see
-    <citerefentry><refentrytitle>pam_systemd</refentrytitle><manvolnum>8</manvolnum></citerefentry> for details.</para>
+              <tbody>
+                <row>
+                  <entry morerows="1" valign="top"><literal>success</literal></entry>
+                  <entry valign="top"><literal>killed</literal></entry>
+                  <entry><literal>HUP</literal>, <literal>INT</literal>, <literal>TERM</literal>, <literal>PIPE</literal></entry>
+                </row>
+                <row>
+                  <entry valign="top"><literal>exited</literal></entry>
+                  <entry><literal>0</literal></entry>
+                </row>
+                <row>
+                  <entry morerows="1" valign="top"><literal>protocol</literal></entry>
+                  <entry valign="top">not set</entry>
+                  <entry>not set</entry>
+                </row>
+                <row>
+                  <entry><literal>exited</literal></entry>
+                  <entry><literal>0</literal></entry>
+                </row>
+                <row>
+                  <entry morerows="1" valign="top"><literal>timeout</literal></entry>
+                  <entry valign="top"><literal>killed</literal></entry>
+                  <entry><literal>TERM</literal>, <literal>KILL</literal></entry>
+                </row>
+                <row>
+                  <entry valign="top"><literal>exited</literal></entry>
+                  <entry><literal>0</literal>, <literal>1</literal>, <literal>2</literal>, <literal
+                  >3</literal>, …, <literal>255</literal></entry>
+                </row>
+                <row>
+                  <entry valign="top"><literal>exit-code</literal></entry>
+                  <entry valign="top"><literal>exited</literal></entry>
+                  <entry><literal>1</literal>, <literal>2</literal>, <literal
+                  >3</literal>, …, <literal>255</literal></entry>
+                </row>
+                <row>
+                  <entry valign="top"><literal>signal</literal></entry>
+                  <entry valign="top"><literal>killed</literal></entry>
+                  <entry><literal>HUP</literal>, <literal>INT</literal>, <literal>KILL</literal>, …</entry>
+                </row>
+                <row>
+                  <entry valign="top"><literal>core-dump</literal></entry>
+                  <entry valign="top"><literal>dumped</literal></entry>
+                  <entry><literal>ABRT</literal>, <literal>SEGV</literal>, <literal>QUIT</literal>, …</entry>
+                </row>
+                <row>
+                  <entry morerows="2" valign="top"><literal>watchdog</literal></entry>
+                  <entry><literal>dumped</literal></entry>
+                  <entry><literal>ABRT</literal></entry>
+                </row>
+                <row>
+                  <entry><literal>killed</literal></entry>
+                  <entry><literal>TERM</literal>, <literal>KILL</literal></entry>
+                </row>
+                <row>
+                  <entry><literal>exited</literal></entry>
+                  <entry><literal>0</literal>, <literal>1</literal>, <literal>2</literal>, <literal
+                  >3</literal>, …, <literal>255</literal></entry>
+                </row>
+                <row>
+                  <entry valign="top"><literal>exec-condition</literal></entry>
+                  <entry><literal>exited</literal></entry>
+                  <entry><literal>1</literal>, <literal>2</literal>, <literal>3</literal>, <literal
+                  >4</literal>, …, <literal>254</literal></entry>
+                </row>
+                <row>
+                  <entry valign="top"><literal>oom-kill</literal></entry>
+                  <entry valign="top"><literal>killed</literal></entry>
+                  <entry><literal>TERM</literal>, <literal>KILL</literal></entry>
+                </row>
+                <row>
+                  <entry><literal>start-limit-hit</literal></entry>
+                  <entry>not set</entry>
+                  <entry>not set</entry>
+                </row>
+                <row>
+                  <entry><literal>resources</literal></entry>
+                  <entry>any of the above</entry>
+                  <entry>any of the above</entry>
+                </row>
+                <row>
+                  <entry namest="results" nameend="status">Note: the process may be also terminated by a signal not sent by systemd. In particular the process may send an arbitrary signal to itself in a handler for any of the non-maskable signals. Nevertheless, in the <literal>timeout</literal> and <literal>watchdog</literal> rows above only the signals that systemd sends have been included. Moreover, using <varname>SuccessExitStatus=</varname> additional exit statuses may be declared to indicate clean termination, which is not reflected by this table.</entry>
+                </row>
+              </tbody>
+            </tgroup>
+          </table></listitem>
+        </varlistentry>
+
+        <varlistentry>
+          <term><varname>$PIDFILE</varname></term>
+
+          <listitem><para>The path to the configured PID file, in case the process is forked off on behalf of
+          a service that uses the <varname>PIDFile=</varname> setting, see
+          <citerefentry><refentrytitle>systemd.service</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+          for details. Service code may use this environment variable to automatically generate a PID file at
+          the location configured in the unit file. This field is set to an absolute path in the file
+          system.</para></listitem>
+        </varlistentry>
+
+      </variablelist>
+
+      <para>For system services, when <varname>PAMName=</varname> is enabled and <command>pam_systemd</command> is part
+      of the selected PAM stack, additional environment variables defined by systemd may be set for
+      services. Specifically, these are <varname>$XDG_SEAT</varname>, <varname>$XDG_VTNR</varname>, see
+      <citerefentry><refentrytitle>pam_systemd</refentrytitle><manvolnum>8</manvolnum></citerefentry> for details.</para>
+    </refsect2>
+
   </refsect1>
 
   <refsect1>
-    <title>Process exit codes</title>
+    <title>Process Exit Codes</title>
 
     <para>When invoking a unit process the service manager possibly fails to apply the execution parameters configured
     with the settings above. In that case the already created service process will exit with a non-zero exit code
@@ -3456,7 +3615,7 @@ StandardInputData=SWNrIHNpdHplIGRhIHVuJyBlc3NlIEtsb3BzLAp1ZmYgZWVtYWwga2xvcHAncy
           <row>
             <entry>226</entry>
             <entry><constant>EXIT_NAMESPACE</constant></entry>
-            <entry>Failed to set up mount namespacing. See <varname>ReadOnlyPaths=</varname> and related settings above.</entry>
+            <entry>Failed to set up mount, UTS, or IPC namespacing. See <varname>ReadOnlyPaths=</varname>, <varname>ProtectHostname=</varname>, <varname>PrivateIPC=</varname>, and related settings above.</entry>
           </row>
           <row>
             <entry>227</entry>
