@@ -9,8 +9,10 @@
 #include "disk.h"
 #include "graphics.h"
 #include "linux.h"
+#include "loader-features.h"
 #include "measure.h"
 #include "pe.h"
+#include "random-seed.h"
 #include "shim.h"
 #include "util.h"
 #include "sha512.h"
@@ -69,6 +71,7 @@ typedef struct {
         BOOLEAN force_menu;
         UINTN console_mode;
         enum console_mode_change_type console_mode_change;
+        RandomSeedMode random_seed_mode;
 } Config;
 
 static VOID cursor_left(UINTN *cursor, UINTN *first) {
@@ -459,6 +462,21 @@ static VOID print_status(Config *config, CHAR16 *loaded_image_path) {
         Print(L"password:               %s\n", yes_no(config->hash != NULL));
         Print(L"auto-entries:           %s\n", yes_no(config->auto_entries));
         Print(L"auto-firmware:          %s\n", yes_no(config->auto_firmware));
+
+        switch (config->random_seed_mode) {
+        case RANDOM_SEED_OFF:
+                Print(L"random-seed-mode:       off\n");
+                break;
+        case RANDOM_SEED_WITH_SYSTEM_TOKEN:
+                Print(L"random-seed-node:       with-system-token\n");
+                break;
+        case RANDOM_SEED_ALWAYS:
+                Print(L"random-seed-node:       always\n");
+                break;
+        default:
+                ;
+        }
+
         Print(L"\n");
 
         Print(L"config entry count:     %d\n", config->entry_count);
@@ -1129,7 +1147,9 @@ static UINTN config_defaults_load_from_file(Config *config, CHAR8 *content) {
 
                         if (EFI_ERROR(parse_boolean(value, &on)))
                                 continue;
+
                         config->editor = on;
+                        continue;
                 }
 
                 if (strcmpa((CHAR8 *)"auto-entries", key) == 0) {
@@ -1137,7 +1157,9 @@ static UINTN config_defaults_load_from_file(Config *config, CHAR8 *content) {
 
                         if (EFI_ERROR(parse_boolean(value, &on)))
                                 continue;
+
                         config->auto_entries = on;
+                        continue;
                 }
 
                 if (strcmpa((CHAR8 *)"auto-firmware", key) == 0) {
@@ -1145,7 +1167,9 @@ static UINTN config_defaults_load_from_file(Config *config, CHAR8 *content) {
 
                         if (EFI_ERROR(parse_boolean(value, &on)))
                                 continue;
+
                         config->auto_firmware = on;
+                        continue;
                 }
 
                 if (strcmpa((CHAR8 *)"console-mode", key) == 0) {
@@ -1171,6 +1195,23 @@ static UINTN config_defaults_load_from_file(Config *config, CHAR8 *content) {
                         if (hash) {
                                 FreePool(config->hash);
                                 config->hash = hash;
+                        }
+                }
+
+                if (strcmpa((CHAR8*) "random-seed-mode", key) == 0) {
+                        if (strcmpa((CHAR8*) "off", value) == 0)
+                                config->random_seed_mode = RANDOM_SEED_OFF;
+                        else if (strcmpa((CHAR8*) "with-system-token", value) == 0)
+                                config->random_seed_mode = RANDOM_SEED_WITH_SYSTEM_TOKEN;
+                        else if (strcmpa((CHAR8*) "always", value) == 0)
+                                config->random_seed_mode = RANDOM_SEED_ALWAYS;
+                        else {
+                                BOOLEAN on;
+
+                                if (EFI_ERROR(parse_boolean(value, &on)))
+                                        continue;
+
+                                config->random_seed_mode = on ? RANDOM_SEED_ALWAYS : RANDOM_SEED_OFF;
                         }
                 }
         }
@@ -1514,6 +1555,7 @@ static VOID config_load_defaults(Config *config, EFI_HANDLE *device, EFI_FILE *r
                 .editor = TRUE,
                 .auto_entries = TRUE,
                 .auto_firmware = TRUE,
+                .random_seed_mode = RANDOM_SEED_WITH_SYSTEM_TOKEN,
         };
 
         err = pe_memory_locate_sections(image_base, sections, &addr, NULL, &len);
@@ -2421,11 +2463,13 @@ static VOID config_write_entries_to_variable(Config *config) {
 
 EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *sys_table) {
         static const UINT64 loader_features =
-                (1ULL << 0) | /* I honour the LoaderConfigTimeout variable */
-                (1ULL << 1) | /* I honour the LoaderConfigTimeoutOneShot variable */
-                (1ULL << 2) | /* I honour the LoaderEntryDefault variable */
-                (1ULL << 3) | /* I honour the LoaderEntryOneShot variable */
-                (1ULL << 4) | /* I support boot counting */
+                EFI_LOADER_FEATURE_CONFIG_TIMEOUT |
+                EFI_LOADER_FEATURE_CONFIG_TIMEOUT_ONE_SHOT |
+                EFI_LOADER_FEATURE_ENTRY_DEFAULT |
+                EFI_LOADER_FEATURE_ENTRY_ONESHOT |
+                EFI_LOADER_FEATURE_BOOT_COUNTING |
+                EFI_LOADER_FEATURE_XBOOTLDR |
+                EFI_LOADER_FEATURE_RANDOM_SEED |
                 0;
 
         _cleanup_freepool_ CHAR16 *infostr = NULL, *typestr = NULL;
@@ -2456,7 +2500,7 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *sys_table) {
         err = uefi_call_wrapper(BS->OpenProtocol, 6, image, &LoadedImageProtocol, (VOID **)&loaded_image,
                                 image, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
         if (EFI_ERROR(err)) {
-                Print(L"Error getting a LoadedImageProtocol handle: %r ", err);
+                Print(L"Error getting a LoadedImageProtocol handle: %r", err);
                 uefi_call_wrapper(BS->Stall, 1, 3 * 1000 * 1000);
                 return err;
         }
@@ -2577,8 +2621,11 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *sys_table) {
 
                 config_entry_bump_counters(entry, root_dir);
 
-                /* export the selected boot entry to the system */
-                efivar_set(L"LoaderEntrySelected", entry->id, FALSE);
+                /* Export the selected boot entry to the system */
+                (VOID) efivar_set(L"LoaderEntrySelected", entry->id, FALSE);
+
+                /* Optionally, read a random seed off the ESP and pass it to the OS */
+                (VOID) process_random_seed(root_dir, config.random_seed_mode);
 
                 uefi_call_wrapper(BS->SetWatchdogTimer, 4, 5 * 60, 0x10000, 0, NULL);
                 err = image_start(image, &config, entry);
