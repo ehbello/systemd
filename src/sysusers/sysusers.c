@@ -345,28 +345,6 @@ static int putsgent_with_members(const struct sgrp *sg, FILE *gshadow) {
 }
 #endif
 
-static int sync_rights(FILE *from, const char *to) {
-        struct stat st;
-
-        if (fstat(fileno(from), &st) < 0)
-                return -errno;
-
-        return chmod_and_chown_unsafe(to, st.st_mode & 07777, st.st_uid, st.st_gid);
-}
-
-static int rename_and_apply_smack(const char *temp_path, const char *dest_path) {
-        int r = 0;
-        if (rename(temp_path, dest_path) < 0)
-                return -errno;
-
-#ifdef SMACK_RUN_LABEL
-        r = mac_smack_apply(dest_path, SMACK_ATTR_ACCESS, SMACK_FLOOR_LABEL);
-        if (r < 0)
-                return r;
-#endif
-        return r;
-}
-
 static const char* default_shell(uid_t uid) {
         return uid == 0 ? "/bin/sh" : NOLOGIN;
 }
@@ -389,7 +367,7 @@ static int write_temporary_passwd(const char *passwd_path, FILE **tmpfile, char 
         original = fopen(passwd_path, "re");
         if (original) {
 
-                r = sync_rights(original, passwd_tmp);
+                r = sync_rights(fileno(original), fileno(passwd));
                 if (r < 0)
                         return r;
 
@@ -491,7 +469,7 @@ static int write_temporary_shadow(const char *shadow_path, FILE **tmpfile, char 
         original = fopen(shadow_path, "re");
         if (original) {
 
-                r = sync_rights(original, shadow_tmp);
+                r = sync_rights(fileno(original), fileno(shadow));
                 if (r < 0)
                         return r;
 
@@ -529,7 +507,7 @@ static int write_temporary_shadow(const char *shadow_path, FILE **tmpfile, char 
         ORDERED_HASHMAP_FOREACH(i, todo_uids, iterator) {
                 struct spwd n = {
                         .sp_namp = i->name,
-                        .sp_pwdp = (char*) "!!", /* lock this password, and make it invalid */
+                        .sp_pwdp = (char*) "!*", /* lock this password, and make it invalid */
                         .sp_lstchg = lstchg,
                         .sp_min = -1,
                         .sp_max = -1,
@@ -588,7 +566,7 @@ static int write_temporary_group(const char *group_path, FILE **tmpfile, char **
         original = fopen(group_path, "re");
         if (original) {
 
-                r = sync_rights(original, group_tmp);
+                r = sync_rights(fileno(original), fileno(group));
                 if (r < 0)
                         return r;
 
@@ -687,7 +665,7 @@ static int write_temporary_gshadow(const char * gshadow_path, FILE **tmpfile, ch
         if (original) {
                 struct sgrp *sg;
 
-                r = sync_rights(original, gshadow_tmp);
+                r = sync_rights(fileno(original), fileno(gshadow));
                 if (r < 0)
                         return r;
 
@@ -794,14 +772,14 @@ static int write_files(void) {
 
         /* And make the new files count */
         if (group) {
-                r = rename_and_apply_smack(group_tmp, group_path);
+                r = rename_and_apply_smack_floor_label(group_tmp, group_path);
                 if (r < 0)
                         return r;
 
                 group_tmp = mfree(group_tmp);
         }
         if (gshadow) {
-                r = rename_and_apply_smack(gshadow_tmp, gshadow_path);
+                r = rename_and_apply_smack_floor_label(gshadow_tmp, gshadow_path);
                 if (r < 0)
                         return r;
 
@@ -809,14 +787,14 @@ static int write_files(void) {
         }
 
         if (passwd) {
-                r = rename_and_apply_smack(passwd_tmp, passwd_path);
+                r = rename_and_apply_smack_floor_label(passwd_tmp, passwd_path);
                 if (r < 0)
                         return r;
 
                 passwd_tmp = mfree(passwd_tmp);
         }
         if (shadow) {
-                r = rename_and_apply_smack(shadow_tmp, shadow_path);
+                r = rename_and_apply_smack_floor_label(shadow_tmp, shadow_path);
                 if (r < 0)
                         return r;
 
@@ -1389,12 +1367,18 @@ static bool item_equal(Item *a, Item *b) {
 static int parse_line(const char *fname, unsigned line, const char *buffer) {
 
         static const Specifier specifier_table[] = {
-                { 'm', specifier_machine_id,     NULL },
-                { 'b', specifier_boot_id,        NULL },
-                { 'H', specifier_host_name,      NULL },
-                { 'v', specifier_kernel_release, NULL },
-                { 'T', specifier_tmp_dir,        NULL },
-                { 'V', specifier_var_tmp_dir,    NULL },
+                { 'm', specifier_machine_id,      NULL },
+                { 'b', specifier_boot_id,         NULL },
+                { 'H', specifier_host_name,       NULL },
+                { 'l', specifier_short_host_name, NULL },
+                { 'v', specifier_kernel_release,  NULL },
+                { 'a', specifier_architecture,    NULL },
+                { 'o', specifier_os_id,           NULL },
+                { 'w', specifier_os_version_id,   NULL },
+                { 'B', specifier_os_build_id,     NULL },
+                { 'W', specifier_os_variant_id,   NULL },
+                { 'T', specifier_tmp_dir,         NULL },
+                { 'V', specifier_var_tmp_dir,     NULL },
                 {}
         };
 
@@ -1443,9 +1427,9 @@ static int parse_line(const char *fname, unsigned line, const char *buffer) {
         if (name) {
                 r = specifier_printf(name, specifier_table, NULL, &resolved_name);
                 if (r < 0)
-                        log_error_errno(r, "[%s:%u] Failed to replace specifiers: %s", fname, line, name);
+                        return log_error_errno(r, "[%s:%u] Failed to replace specifiers in '%s': %m", fname, line, name);
 
-                if (!valid_user_group_name(resolved_name))
+                if (!valid_user_group_name(resolved_name, 0))
                         return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                                "[%s:%u] '%s' is not a valid user or group name.",
                                                fname, line, resolved_name);
@@ -1458,7 +1442,7 @@ static int parse_line(const char *fname, unsigned line, const char *buffer) {
         if (id) {
                 r = specifier_printf(id, specifier_table, NULL, &resolved_id);
                 if (r < 0)
-                        return log_error_errno(r, "[%s:%u] Failed to replace specifiers: %s",
+                        return log_error_errno(r, "[%s:%u] Failed to replace specifiers in '%s': %m",
                                                fname, line, name);
         }
 
@@ -1469,7 +1453,7 @@ static int parse_line(const char *fname, unsigned line, const char *buffer) {
         if (description) {
                 r = specifier_printf(description, specifier_table, NULL, &resolved_description);
                 if (r < 0)
-                        return log_error_errno(r, "[%s:%u] Failed to replace specifiers: %s",
+                        return log_error_errno(r, "[%s:%u] Failed to replace specifiers in '%s': %m",
                                                fname, line, description);
 
                 if (!valid_gecos(resolved_description))
@@ -1485,7 +1469,7 @@ static int parse_line(const char *fname, unsigned line, const char *buffer) {
         if (home) {
                 r = specifier_printf(home, specifier_table, NULL, &resolved_home);
                 if (r < 0)
-                        return log_error_errno(r, "[%s:%u] Failed to replace specifiers: %s",
+                        return log_error_errno(r, "[%s:%u] Failed to replace specifiers in '%s': %m",
                                                fname, line, home);
 
                 if (!valid_home(resolved_home))
@@ -1501,7 +1485,7 @@ static int parse_line(const char *fname, unsigned line, const char *buffer) {
         if (shell) {
                 r = specifier_printf(shell, specifier_table, NULL, &resolved_shell);
                 if (r < 0)
-                        return log_error_errno(r, "[%s:%u] Failed to replace specifiers: %s",
+                        return log_error_errno(r, "[%s:%u] Failed to replace specifiers in '%s': %m",
                                                fname, line, shell);
 
                 if (!valid_shell(resolved_shell))
@@ -1548,7 +1532,7 @@ static int parse_line(const char *fname, unsigned line, const char *buffer) {
                                                "[%s:%u] Lines of type 'm' require a group name in the third field.",
                                                fname, line);
 
-                if (!valid_user_group_name(resolved_id))
+                if (!valid_user_group_name(resolved_id, 0))
                         return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                                "[%s:%u] '%s' is not a valid user or group name.",
                                                fname, line, resolved_id);
@@ -1589,7 +1573,7 @@ static int parse_line(const char *fname, unsigned line, const char *buffer) {
                                 if (split_pair(resolved_id, ":", &uid, &gid) == 0) {
                                         r = parse_gid(gid, &i->gid);
                                         if (r < 0) {
-                                                if (valid_user_group_name(gid))
+                                                if (valid_user_group_name(gid, 0))
                                                         i->group_name = TAKE_PTR(gid);
                                                 else
                                                         return log_error_errno(r, "Failed to parse GID: '%s': %m", id);
@@ -1808,7 +1792,7 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_ROOT:
-                        r = parse_path_argument_and_warn(optarg, true, &arg_root);
+                        r = parse_path_argument_and_warn(optarg, /* suppress_root= */ false, &arg_root);
                         if (r < 0)
                                 return r;
                         break;
@@ -1914,7 +1898,7 @@ static int run(int argc, char *argv[]) {
 
         r = mac_selinux_init();
         if (r < 0)
-                return log_error_errno(r, "SELinux setup failed: %m");
+                return r;
 
         /* If command line arguments are specified along with --replace, read all
          * configuration files and insert the positional arguments at the specified
