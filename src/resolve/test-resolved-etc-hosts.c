@@ -27,18 +27,24 @@ TEST(parse_etc_hosts_system) {
         assert_se(etc_hosts_parse(&hosts, f) == 0);
 }
 
+#define in_addr_4(_address_str)                                       \
+        (&(struct in_addr_data) { .family = AF_INET, .address.in = { .s_addr = inet_addr(_address_str) } })
+
+#define in_addr_6(...)                                           \
+        (&(struct in_addr_data) { .family = AF_INET6, .address.in6 = { .s6_addr = __VA_ARGS__ } })
+
 #define has_4(_set, _address_str)                                       \
-        set_contains(_set, &(struct in_addr_data) { .family = AF_INET, .address.in = { .s_addr = inet_addr(_address_str) } })
+        set_contains(_set, in_addr_4(_address_str))
 
 #define has_6(_set, ...)                                           \
-        set_contains(_set, &(struct in_addr_data) { .family = AF_INET6, .address.in6 = { .s6_addr = __VA_ARGS__ } })
+        set_contains(_set, in_addr_6(__VA_ARGS__))
 
 TEST(parse_etc_hosts) {
         _cleanup_(unlink_tempfilep) char
                 t[] = "/tmp/test-resolved-etc-hosts.XXXXXX";
 
         int fd;
-        _cleanup_fclose_ FILE *f;
+        _cleanup_fclose_ FILE *f = NULL;
 
         fd = mkostemp_safe(t);
         assert_se(fd >= 0);
@@ -110,6 +116,20 @@ TEST(parse_etc_hosts) {
         assert_se(set_size(bn->addresses) == 1);
         assert_se(has_6(bn->addresses, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5}));
 
+        EtcHostsItemByAddress *ba;
+        assert_se(ba = hashmap_get(hosts.by_address, in_addr_4("1.2.3.6")));
+        assert_se(set_size(ba->names) == 2);
+        assert_se(set_contains(ba->names, "dash"));
+        assert_se(set_contains(ba->names, "dash-dash.where-dash"));
+        assert_se(streq(ba->canonical_name, "dash"));
+
+        assert_se(ba = hashmap_get(hosts.by_address, in_addr_6({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5})));
+        assert_se(set_size(ba->names) == 3);
+        assert_se(set_contains(ba->names, "some.where"));
+        assert_se(set_contains(ba->names, "some.other"));
+        assert_se(set_contains(ba->names, "foobar.foo.foo"));
+        assert_se(streq(ba->canonical_name, "some.where"));
+
         assert_se( set_contains(hosts.no_address, "some.where"));
         assert_se( set_contains(hosts.no_address, "some.other"));
         assert_se( set_contains(hosts.no_address, "deny.listed"));
@@ -118,7 +138,7 @@ TEST(parse_etc_hosts) {
 
 static void test_parse_file_one(const char *fname) {
         _cleanup_(etc_hosts_clear) EtcHosts hosts = {};
-        _cleanup_fclose_ FILE *f;
+        _cleanup_fclose_ FILE *f = NULL;
 
         log_info("/* %s(\"%s\") */", __func__, fname);
 

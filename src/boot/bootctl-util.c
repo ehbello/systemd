@@ -5,11 +5,8 @@
 #include "bootctl.h"
 #include "bootctl-util.h"
 #include "fileio.h"
-#include "os-util.h"
-#include "path-util.h"
 #include "stat-util.h"
 #include "sync-util.h"
-#include "utf8.h"
 
 int sync_everything(void) {
         int ret = 0, k;
@@ -30,8 +27,8 @@ int sync_everything(void) {
 }
 
 const char *get_efi_arch(void) {
-        /* Detect EFI firmware architecture of the running system. On mixed mode systems, it could be 32bit
-         * while the kernel is running in 64bit. */
+        /* Detect EFI firmware architecture of the running system. On mixed mode systems, it could be 32-bit
+         * while the kernel is running in 64-bit. */
 
 #ifdef __x86_64__
         _cleanup_free_ char *platform_size = NULL;
@@ -66,7 +63,7 @@ int get_file_version(int fd, char **ret) {
         struct stat st;
         char *buf;
         const char *s, *e;
-        char *x = NULL;
+        char *marker = NULL;
         int r;
 
         assert(fd >= 0);
@@ -76,135 +73,58 @@ int get_file_version(int fd, char **ret) {
                 return log_error_errno(errno, "Failed to stat EFI binary: %m");
 
         r = stat_verify_regular(&st);
-        if (r < 0)
-                return log_error_errno(r, "EFI binary is not a regular file: %m");
-
-        if (st.st_size < 27 || file_offset_beyond_memory_size(st.st_size)) {
-                *ret = NULL;
-                return 0;
+        if (r < 0) {
+                log_debug_errno(r, "EFI binary is not a regular file, assuming no version information: %m");
+                return -ESRCH;
         }
+
+        if (st.st_size < 27 || file_offset_beyond_memory_size(st.st_size))
+                return log_debug_errno(SYNTHETIC_ERRNO(ESRCH),
+                                       "EFI binary size too %s: %"PRIi64,
+                                       st.st_size < 27 ? "small" : "large", st.st_size);
 
         buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
         if (buf == MAP_FAILED)
-                return log_error_errno(errno, "Failed to memory map EFI binary: %m");
+                return log_error_errno(errno, "Failed to mmap EFI binary: %m");
 
         s = mempmem_safe(buf, st.st_size - 8, "#### LoaderInfo: ", 17);
         if (!s) {
-                r = -ESRCH;
+                r = log_debug_errno(SYNTHETIC_ERRNO(ESRCH), "EFI binary has no LoaderInfo marker.");
                 goto finish;
         }
 
         e = memmem_safe(s, st.st_size - (s - buf), " ####", 5);
         if (!e || e - s < 3) {
-                r = log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Malformed version string.");
+                r = log_error_errno(SYNTHETIC_ERRNO(EINVAL), "EFI binary has malformed LoaderInfo marker.");
                 goto finish;
         }
 
-        x = strndup(s, e - s);
-        if (!x) {
+        marker = strndup(s, e - s);
+        if (!marker) {
                 r = log_oom();
                 goto finish;
         }
-        r = 1;
 
+        log_debug("EFI binary LoaderInfo marker: \"%s\"", marker);
+        r = 0;
+        *ret = marker;
 finish:
         (void) munmap(buf, st.st_size);
-        if (r >= 0)
-                *ret = x;
-
         return r;
 }
 
 int settle_entry_token(void) {
         int r;
 
-        switch (arg_entry_token_type) {
-
-        case ARG_ENTRY_TOKEN_AUTO: {
-                _cleanup_free_ char *buf = NULL, *p = NULL;
-                p = path_join(arg_root, etc_kernel(), "entry-token");
-                if (!p)
-                        return log_oom();
-                r = read_one_line_file(p, &buf);
-                if (r < 0 && r != -ENOENT)
-                        return log_error_errno(r, "Failed to read %s: %m", p);
-
-                if (!isempty(buf)) {
-                        free_and_replace(arg_entry_token, buf);
-                        arg_entry_token_type = ARG_ENTRY_TOKEN_LITERAL;
-                } else if (sd_id128_is_null(arg_machine_id)) {
-                        _cleanup_free_ char *id = NULL, *image_id = NULL;
-
-                        r = parse_os_release(arg_root,
-                                             "IMAGE_ID", &image_id,
-                                             "ID", &id);
-                        if (r < 0)
-                                return log_error_errno(r, "Failed to load /etc/os-release: %m");
-
-                        if (!isempty(image_id)) {
-                                free_and_replace(arg_entry_token, image_id);
-                                arg_entry_token_type = ARG_ENTRY_TOKEN_OS_IMAGE_ID;
-                        } else if (!isempty(id)) {
-                                free_and_replace(arg_entry_token, id);
-                                arg_entry_token_type = ARG_ENTRY_TOKEN_OS_ID;
-                        } else
-                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "No machine ID set, and /etc/os-release carries no ID=/IMAGE_ID= fields.");
-                } else {
-                        r = free_and_strdup_warn(&arg_entry_token, SD_ID128_TO_STRING(arg_machine_id));
-                        if (r < 0)
-                                return r;
-
-                        arg_entry_token_type = ARG_ENTRY_TOKEN_MACHINE_ID;
-                }
-
-                break;
-        }
-
-        case ARG_ENTRY_TOKEN_MACHINE_ID:
-                if (sd_id128_is_null(arg_machine_id))
-                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "No machine ID set.");
-
-                r = free_and_strdup_warn(&arg_entry_token, SD_ID128_TO_STRING(arg_machine_id));
-                if (r < 0)
-                        return r;
-
-                break;
-
-        case ARG_ENTRY_TOKEN_OS_IMAGE_ID: {
-                _cleanup_free_ char *buf = NULL;
-
-                r = parse_os_release(arg_root, "IMAGE_ID", &buf);
-                if (r < 0)
-                        return log_error_errno(r, "Failed to load /etc/os-release: %m");
-
-                if (isempty(buf))
-                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "IMAGE_ID= field not set in /etc/os-release.");
-
-                free_and_replace(arg_entry_token, buf);
-                break;
-        }
-
-        case ARG_ENTRY_TOKEN_OS_ID: {
-                _cleanup_free_ char *buf = NULL;
-
-                r = parse_os_release(arg_root, "ID", &buf);
-                if (r < 0)
-                        return log_error_errno(r, "Failed to load /etc/os-release: %m");
-
-                if (isempty(buf))
-                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "ID= field not set in /etc/os-release.");
-
-                free_and_replace(arg_entry_token, buf);
-                break;
-        }
-
-        case ARG_ENTRY_TOKEN_LITERAL:
-                assert(!isempty(arg_entry_token)); /* already filled in by command line parser */
-                break;
-        }
-
-        if (isempty(arg_entry_token) || !(utf8_is_valid(arg_entry_token) && string_is_safe(arg_entry_token)))
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Selected entry token not valid: %s", arg_entry_token);
+        r = boot_entry_token_ensure(
+                        arg_root,
+                        etc_kernel(),
+                        arg_machine_id,
+                        /* machine_id_is_random = */ false,
+                        &arg_entry_token_type,
+                        &arg_entry_token);
+        if (r < 0)
+                return r;
 
         log_debug("Using entry token: %s", arg_entry_token);
         return 0;

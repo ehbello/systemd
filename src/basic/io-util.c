@@ -54,8 +54,7 @@ ssize_t loop_read(int fd, void *buf, size_t nbytes, bool do_poll) {
 
         assert(fd >= 0);
 
-        /* If called with nbytes == 0, let's call read() at least
-         * once, to validate the operation */
+        /* If called with nbytes == 0, let's call read() at least once, to validate the operation */
 
         if (nbytes > (size_t) SSIZE_MAX)
                 return -EINVAL;
@@ -107,12 +106,24 @@ int loop_read_exact(int fd, void *buf, size_t nbytes, bool do_poll) {
 }
 
 int loop_write(int fd, const void *buf, size_t nbytes, bool do_poll) {
-        const uint8_t *p = ASSERT_PTR(buf);
+        const uint8_t *p;
 
         assert(fd >= 0);
 
-        if (_unlikely_(nbytes > (size_t) SSIZE_MAX))
-                return -EINVAL;
+        if (nbytes == 0) {
+                static const dummy_t dummy[0];
+                assert_cc(sizeof(dummy) == 0);
+                p = (const void*) dummy; /* Some valid pointer, in case NULL was specified */
+        } else {
+                assert(buf);
+
+                if (nbytes == SIZE_MAX)
+                        nbytes = strlen(buf);
+                else if (_unlikely_(nbytes > (size_t) SSIZE_MAX))
+                        return -EINVAL;
+
+                p = buf;
+        }
 
         do {
                 ssize_t k;
@@ -361,4 +372,14 @@ size_t iovw_size(struct iovec_wrapper *iovw) {
                 n += iovw->iovec[i].iov_len;
 
         return n;
+}
+
+void iovec_array_free(struct iovec *iov, size_t n) {
+        if (!iov)
+                return;
+
+        for (size_t i = 0; i < n; i++)
+                free(iov[i].iov_base);
+
+        free(iov);
 }

@@ -11,10 +11,8 @@
 set -eux
 set -o pipefail
 
-# shellcheck source=test/units/assert.sh
-. "$(dirname "$0")"/assert.sh
-
-: >/failed
+# shellcheck source=test/units/util.sh
+. "$(dirname "$0")"/util.sh
 
 RUN_OUT="$(mktemp)"
 
@@ -29,6 +27,7 @@ disable_ipv6() {
 enable_ipv6() {
     sysctl -w net.ipv6.conf.all.disable_ipv6=0
     networkctl reconfigure dns0
+    /usr/lib/systemd/systemd-networkd-wait-online --ipv4 --ipv6 --interface=dns0:routable --timeout=30
 }
 
 monitor_check_rr() (
@@ -46,7 +45,7 @@ monitor_check_rr() (
 
 # Test for resolvectl, resolvconf
 systemctl unmask systemd-resolved.service
-systemctl start systemd-resolved.service
+systemctl enable --now systemd-resolved.service
 systemctl service-log-level systemd-resolved.service debug
 ip link add hoge type dummy
 ip link add hoge.foo type dummy
@@ -161,10 +160,12 @@ ip link del hoge.foo
 ### SETUP ###
 # Configure network
 hostnamectl hostname ns1.unsigned.test
-{
-    echo "10.0.0.1               ns1.unsigned.test"
-    echo "fd00:dead:beef:cafe::1 ns1.unsigned.test"
-} >>/etc/hosts
+cat >>/etc/hosts <<EOF
+10.0.0.1               ns1.unsigned.test
+fd00:dead:beef:cafe::1 ns1.unsigned.test
+
+127.128.0.5     localhost5 localhost5.localdomain localhost5.localdomain4 localhost.localdomain5 localhost5.localdomain5
+EOF
 
 mkdir -p /etc/systemd/network
 cat >/etc/systemd/network/dns0.netdev <<EOF
@@ -293,6 +294,20 @@ grep -qE "^127\.0\.0\.1\s+localhost" "$RUN_OUT"
 run getent -s myhostname hosts localhost
 grep -qE "^127\.0\.0\.1\s+localhost" "$RUN_OUT"
 enable_ipv6
+
+# Issue: https://github.com/systemd/systemd/issues/25088
+run getent -s resolve hosts 127.128.0.5
+grep -qEx '127\.128\.0\.5\s+localhost5(\s+localhost5?\.localdomain[45]?){4}' "$RUN_OUT"
+[ "$(wc -l <"$RUN_OUT")" -eq 1 ]
+
+# Issue: https://github.com/systemd/systemd/issues/20158
+run dig +noall +answer +additional localhost5.
+grep -qEx 'localhost5\.\s+0\s+IN\s+A\s+127\.128\.0\.5' "$RUN_OUT"
+[ "$(wc -l <"$RUN_OUT")" -eq 1 ]
+run dig +noall +answer +additional localhost5.localdomain4.
+grep -qEx 'localhost5\.localdomain4\.\s+0\s+IN\s+CNAME\s+localhost5\.' "$RUN_OUT"
+grep -qEx 'localhost5\.\s+0\s+IN\s+A\s+127\.128\.0\.5' "$RUN_OUT"
+[ "$(wc -l <"$RUN_OUT")" -eq 2 ]
 
 : "--- Basic resolved tests ---"
 # Issue: https://github.com/systemd/systemd/issues/22229
@@ -515,5 +530,67 @@ grep -qF "fd00:dead:beef:cafe::123" "$RUN_OUT"
 
 systemctl stop resmontest.service
 
+# Test serve stale feature if nftables is installed
+if command -v nft >/dev/null; then
+    ### Test without serve stale feature ###
+    NFT_FILTER_NAME=dns_port_filter
+
+    drop_dns_outbound_traffic() {
+        nft add table inet $NFT_FILTER_NAME
+        nft add chain inet $NFT_FILTER_NAME output \{ type filter hook output priority 0 \; \}
+        nft add rule inet $NFT_FILTER_NAME output ip daddr 10.0.0.1 udp dport 53 drop
+        nft add rule inet $NFT_FILTER_NAME output ip daddr 10.0.0.1 tcp dport 53 drop
+        nft add rule inet $NFT_FILTER_NAME output ip6 daddr fd00:dead:beef:cafe::1 udp dport 53 drop
+        nft add rule inet $NFT_FILTER_NAME output ip6 daddr fd00:dead:beef:cafe::1 tcp dport 53 drop
+    }
+
+    run dig stale1.unsigned.test -t A
+    grep -qE "NOERROR" "$RUN_OUT"
+    sleep 2
+    drop_dns_outbound_traffic
+    set +e
+    run dig stale1.unsigned.test -t A
+    set -eux
+    grep -qE "no servers could be reached" "$RUN_OUT"
+    nft flush ruleset
+
+    ### Test TIMEOUT with serve stale feature ###
+
+    mkdir -p /run/systemd/resolved.conf.d
+    {
+        echo "[Resolve]"
+        echo "StaleRetentionSec=1d"
+    } >/run/systemd/resolved.conf.d/test.conf
+    ln -svf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+    systemctl restart systemd-resolved.service
+    systemctl service-log-level systemd-resolved.service debug
+
+    run dig stale1.unsigned.test -t A
+    grep -qE "NOERROR" "$RUN_OUT"
+    sleep 2
+    drop_dns_outbound_traffic
+    run dig stale1.unsigned.test -t A
+    grep -qE "NOERROR" "$RUN_OUT"
+    grep -qE "10.0.0.112" "$RUN_OUT"
+
+    nft flush ruleset
+
+    ### Test NXDOMAIN with serve stale feature ###
+    # NXDOMAIN response should replace the cache with NXDOMAIN response
+    run dig stale1.unsigned.test -t A
+    grep -qE "NOERROR" "$RUN_OUT"
+    # Delete stale1 record from zone
+    knotc zone-begin unsigned.test
+    knotc zone-unset unsigned.test stale1 A
+    knotc zone-commit unsigned.test
+    knotc reload
+    sleep 2
+    run dig stale1.unsigned.test -t A
+    grep -qE "NXDOMAIN" "$RUN_OUT"
+
+    nft flush ruleset
+else
+    echo "nftables is not installed. Skipped serve stale feature test."
+fi
+
 touch /testok
-rm /failed

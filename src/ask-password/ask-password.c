@@ -38,14 +38,14 @@ static int help(void) {
                 return log_oom();
 
         printf("%1$s [OPTIONS...] MESSAGE\n\n"
-               "%3$sQuery the user for a system passphrase, via the TTY or an UI agent.%4$s\n\n"
+               "%3$sQuery the user for a system passphrase, via the TTY or a UI agent.%4$s\n\n"
                "  -h --help           Show this help\n"
                "     --icon=NAME      Icon name\n"
                "     --id=ID          Query identifier (e.g. \"cryptsetup:/dev/sda5\")\n"
                "     --keyname=NAME   Kernel key name for caching passwords (e.g. \"cryptsetup\")\n"
                "     --credential=NAME\n"
-               "                      Credential name for LoadCredential=/SetCredential=\n"
-               "                      credentials\n"
+               "                      Credential name for ImportCredential=, LoadCredential= or\n"
+               "                      SetCredential= credentials\n"
                "     --timeout=SEC    Timeout in seconds\n"
                "     --echo=yes|no|masked\n"
                "                      Control whether to show password while typing (echo)\n"
@@ -108,6 +108,10 @@ static int parse_argv(int argc, char *argv[]) {
 
         /* Note the asymmetry: the long option --echo= allows an optional argument, the short option does
          * not. */
+
+        /* Resetting to 0 forces the invocation of an internal initialization routine of getopt_long()
+         * that checks for GNU extensions in optstring ('-' or '+' at the beginning). */
+        optind = 0;
         while ((c = getopt_long(argc, argv, "+hen", options, NULL)) >= 0)
 
                 switch (c) {
@@ -138,14 +142,12 @@ static int parse_argv(int argc, char *argv[]) {
                                 /* Empty argument or explicit string "masked" for default behaviour. */
                                 arg_flags &= ~(ASK_PASSWORD_ECHO|ASK_PASSWORD_SILENT);
                         else {
-                                bool b;
-
-                                r = parse_boolean_argument("--echo=", optarg, &b);
+                                r = parse_boolean_argument("--echo=", optarg, NULL);
                                 if (r < 0)
                                         return r;
 
-                                SET_FLAG(arg_flags, ASK_PASSWORD_ECHO, b);
-                                SET_FLAG(arg_flags, ASK_PASSWORD_SILENT, !b);
+                                SET_FLAG(arg_flags, ASK_PASSWORD_ECHO, r);
+                                SET_FLAG(arg_flags, ASK_PASSWORD_SILENT, !r);
                         }
                         break;
 
@@ -195,13 +197,11 @@ static int parse_argv(int argc, char *argv[]) {
         if (isempty(emoji) || streq(emoji, "auto"))
                 SET_FLAG(arg_flags, ASK_PASSWORD_HIDE_EMOJI, FLAGS_SET(arg_flags, ASK_PASSWORD_ECHO));
         else {
-                bool b;
-
-                r = parse_boolean_argument("--emoji=", emoji, &b);
+                r = parse_boolean_argument("--emoji=", emoji, NULL);
                 if (r < 0)
                          return r;
 
-                SET_FLAG(arg_flags, ASK_PASSWORD_HIDE_EMOJI, !b);
+                SET_FLAG(arg_flags, ASK_PASSWORD_HIDE_EMOJI, !r);
         }
 
         if (argc > optind) {

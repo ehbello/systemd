@@ -4,8 +4,31 @@
 set -eux
 set -o pipefail
 
-# shellcheck source=test/units/assert.sh
-. "$(dirname "$0")"/assert.sh
+# shellcheck source=test/units/test-control.sh
+. "$(dirname "$0")"/test-control.sh
+# shellcheck source=test/units/util.sh
+. "$(dirname "$0")"/util.sh
+
+testcase_timedatectl() {
+    timedatectl --no-pager --help
+    timedatectl --version
+
+    timedatectl
+    timedatectl --no-ask-password
+    timedatectl status --machine=testuser@.host
+    timedatectl status
+    timedatectl show
+    timedatectl show --all
+    timedatectl show -p NTP
+    timedatectl show -p NTP --value
+    timedatectl list-timezones
+
+    if ! systemd-detect-virt -qc; then
+        systemctl enable --runtime --now systemd-timesyncd
+        timedatectl timesync-status
+        timedatectl show-timesync
+    fi
+}
 
 restore_timezone() {
     if [[ -f /tmp/timezone.bak ]]; then
@@ -15,7 +38,7 @@ restore_timezone() {
     fi
 }
 
-test_timezone() {
+testcase_timezone() {
     local ORIG_TZ=
 
     # Debian/Ubuntu specific file
@@ -66,7 +89,7 @@ check_adjtime_not_exist() {
     fi
 }
 
-test_adjtime() {
+testcase_adjtime() {
     # test setting UTC vs. LOCAL in /etc/adjtime
     if [[ -e /etc/adjtime ]]; then
         mv /etc/adjtime /etc/adjtime.bak
@@ -191,8 +214,8 @@ start_mon() {
 }
 
 wait_mon() {
-    for ((i = 0; i < 10; i++)); do
-        if (( i != 0 )); then sleep 1; fi
+    for i in {1..10}; do
+        (( i > 1 )) && sleep 1
         if grep -q "$1" "$mon"; then break; fi
     done
     assert_in "$2" "$(cat "$mon")"
@@ -200,7 +223,7 @@ wait_mon() {
     wait "$MONPID" 2>/dev/null || true
 }
 
-test_ntp() {
+testcase_ntp() {
     # timesyncd has ConditionVirtualization=!container by default; drop/mock that for testing
     if systemd-detect-virt --container --quiet; then
         systemctl disable --quiet --now systemd-timesyncd
@@ -222,8 +245,8 @@ EOF
 
     echo 'disable NTP'
     timedatectl set-ntp false
-    for ((i = 0; i < 10; i++)); do
-        if (( i != 0 )); then sleep 1; fi
+    for i in {1..10}; do
+        (( i > 1 )) && sleep 1
         if [[ "$(systemctl show systemd-timesyncd --property ActiveState)" == "ActiveState=inactive" ]]; then
             break;
         fi
@@ -237,8 +260,8 @@ EOF
     timedatectl set-ntp true
     wait_mon "NTP" "BOOLEAN true"
     assert_ntp "true"
-    for ((i = 0; i < 10; i++)); do
-        if (( i != 0 )); then sleep 1; fi
+    for i in {1..10}; do
+        (( i > 1 )) && sleep 1
         if [[ "$(systemctl show systemd-timesyncd --property ActiveState)" == "ActiveState=active" ]]; then
             break;
         fi
@@ -254,11 +277,6 @@ EOF
     assert_rc 3 systemctl is-active --quiet systemd-timesyncd
 }
 
-: >/failed
-
-test_timezone
-test_adjtime
-test_ntp
+run_testcases
 
 touch /testok
-rm /failed

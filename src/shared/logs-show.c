@@ -93,14 +93,9 @@ static int url_from_catalog(sd_journal *j, char **ret) {
         if (r < 0)
                 return log_error_errno(r, "Failed to find catalog entry: %m");
 
-        weblink = startswith(t, "Documentation:");
-        if (!weblink) {
-                weblink = strstr(t + 1, "\nDocumentation:");
-                if (!weblink)
-                        goto notfound;
-
-                weblink += 15;
-        }
+        weblink = find_line_startswith(t, "Documentation:");
+        if (!weblink)
+                goto notfound;
 
         /* Skip whitespace to value */
         weblink += strspn(weblink, " \t");
@@ -514,7 +509,7 @@ static int output_short(
                 if (r < 0)
                         return r;
         }
-        if (r == -EBADMSG) {
+        if (IN_SET(r, -EBADMSG, -EADDRNOTAVAIL)) {
                 log_debug_errno(r, "Skipping message we can't read: %m");
                 return 0;
         }
@@ -528,6 +523,9 @@ static int output_short(
 
         if (!(flags & OUTPUT_SHOW_ALL))
                 strip_tab_ansi(&message, &message_len, highlight_shifted);
+
+        if (flags & OUTPUT_TRUNCATE_NEWLINE)
+                truncate_nl_full(message, &message_len);
 
         if (priority_len == 1 && *priority >= '0' && *priority <= '7')
                 p = *priority - '0';
@@ -791,11 +789,12 @@ static int output_export(
                 const dual_timestamp *previous_display_ts,
                 const sd_id128_t *previous_boot_id) {
 
+        sd_id128_t journal_boot_id, seqnum_id;
         _cleanup_free_ char *cursor = NULL;
-        const void *data;
-        size_t length;
         usec_t monotonic, realtime;
-        sd_id128_t journal_boot_id;
+        const void *data;
+        uint64_t seqnum;
+        size_t length;
         int r;
 
         assert(j);
@@ -818,14 +817,22 @@ static int output_export(
         if (r < 0)
                 return log_error_errno(r, "Failed to get monotonic timestamp: %m");
 
+        r = sd_journal_get_seqnum(j, &seqnum, &seqnum_id);
+        if (r < 0)
+                return log_error_errno(r, "Failed to get seqnum: %m");
+
         fprintf(f,
                 "__CURSOR=%s\n"
-                "__REALTIME_TIMESTAMP="USEC_FMT"\n"
-                "__MONOTONIC_TIMESTAMP="USEC_FMT"\n"
+                "__REALTIME_TIMESTAMP=" USEC_FMT "\n"
+                "__MONOTONIC_TIMESTAMP=" USEC_FMT "\n"
+                "__SEQNUM=%" PRIu64 "\n"
+                "__SEQNUM_ID=%s\n"
                 "_BOOT_ID=%s\n",
                 cursor,
                 realtime,
                 monotonic,
+                seqnum,
+                SD_ID128_TO_STRING(seqnum_id),
                 SD_ID128_TO_STRING(journal_boot_id));
 
         JOURNAL_FOREACH_DATA_RETVAL(j, data, length, r) {
@@ -864,7 +871,7 @@ static int output_export(
 
                 fputc('\n', f);
         }
-        if (r == -EBADMSG) {
+        if (IN_SET(r, -EADDRNOTAVAIL, -EBADMSG)) {
                 log_debug_errno(r, "Skipping message we can't read: %m");
                 return 0;
         }
@@ -929,11 +936,26 @@ void json_escape(
         }
 }
 
-struct json_data {
+typedef struct JsonData {
         JsonVariant* name;
-        size_t n_values;
-        JsonVariant* values[];
-};
+        JsonVariant* values;
+} JsonData;
+
+static JsonData* json_data_free(JsonData *d) {
+        if (!d)
+                return NULL;
+
+        json_variant_unref(d->name);
+        json_variant_unref(d->values);
+
+        return mfree(d);
+}
+
+DEFINE_TRIVIAL_CLEANUP_FUNC(JsonData*, json_data_free);
+
+DEFINE_HASH_OPS_WITH_VALUE_DESTRUCTOR(json_data_hash_ops_free,
+                                      char, string_hash_func, string_compare_func,
+                                      JsonData, json_data_free);
 
 static int update_json_data(
                 Hashmap *h,
@@ -943,7 +965,7 @@ static int update_json_data(
                 size_t size) {
 
         _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
-        struct json_data *d;
+        JsonData *d;
         int r;
 
         assert(name);
@@ -963,35 +985,31 @@ static int update_json_data(
 
         d = hashmap_get(h, name);
         if (d) {
-                struct json_data *w;
+                r = json_variant_append_array(&d->values, v);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to append JSON value into array: %m");
+        } else {
+                _cleanup_(json_data_freep) JsonData *e = NULL;
 
-                w = realloc(d, offsetof(struct json_data, values) + sizeof(JsonVariant*) * (d->n_values + 1));
-                if (!w)
+                e = new0(JsonData, 1);
+                if (!e)
                         return log_oom();
 
-                d = w;
-                assert_se(hashmap_update(h, json_variant_string(d->name), d) >= 0);
-        } else {
-                _cleanup_(json_variant_unrefp) JsonVariant *n = NULL;
-
-                r = json_variant_new_string(&n, name);
+                r = json_variant_new_string(&e->name, name);
                 if (r < 0)
                         return log_error_errno(r, "Failed to allocate JSON name variant: %m");
 
-                d = malloc0(offsetof(struct json_data, values) + sizeof(JsonVariant*));
-                if (!d)
-                        return log_oom();
+                r = json_variant_append_array(&e->values, v);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to create JSON value array: %m");
 
-                r = hashmap_put(h, json_variant_string(n), d);
-                if (r < 0) {
-                        free(d);
-                        return log_error_errno(r, "Failed to insert JSON name into hashmap: %m");
-                }
+                r = hashmap_put(h, json_variant_string(e->name), e);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to insert JSON data into hashmap: %m");
 
-                d->name = TAKE_PTR(n);
+                TAKE_PTR(e);
         }
 
-        d->values[d->n_values++] = TAKE_PTR(v);
         return 0;
 }
 
@@ -1040,15 +1058,16 @@ static int output_json(
                 const dual_timestamp *previous_display_ts,
                 const sd_id128_t *previous_boot_id) {
 
-        char usecbuf[DECIMAL_STR_MAX(usec_t)];
+        char usecbuf[CONST_MAX(DECIMAL_STR_MAX(usec_t), DECIMAL_STR_MAX(uint64_t))];
         _cleanup_(json_variant_unrefp) JsonVariant *object = NULL;
+        _cleanup_hashmap_free_ Hashmap *h = NULL;
+        sd_id128_t journal_boot_id, seqnum_id;
         _cleanup_free_ char *cursor = NULL;
-        JsonVariant **array = NULL;
-        struct json_data *d;
-        Hashmap *h = NULL;
-        size_t n = 0;
         usec_t realtime, monotonic;
-        sd_id128_t journal_boot_id;
+        JsonVariant **array = NULL;
+        JsonData *d;
+        uint64_t seqnum;
+        size_t n = 0;
         int r;
 
         assert(j);
@@ -1071,102 +1090,85 @@ static int output_json(
         if (r < 0)
                 return log_error_errno(r, "Failed to get monotonic timestamp: %m");
 
-        h = hashmap_new(&string_hash_ops);
+        r = sd_journal_get_seqnum(j, &seqnum, &seqnum_id);
+        if (r < 0)
+                return log_error_errno(r, "Failed to get seqnum: %m");
+
+        h = hashmap_new(&json_data_hash_ops_free);
         if (!h)
                 return log_oom();
 
         r = update_json_data(h, flags, "__CURSOR", cursor, SIZE_MAX);
         if (r < 0)
-                goto finish;
+                return r;
 
         xsprintf(usecbuf, USEC_FMT, realtime);
         r = update_json_data(h, flags, "__REALTIME_TIMESTAMP", usecbuf, SIZE_MAX);
         if (r < 0)
-                goto finish;
+                return r;
 
         xsprintf(usecbuf, USEC_FMT, monotonic);
         r = update_json_data(h, flags, "__MONOTONIC_TIMESTAMP", usecbuf, SIZE_MAX);
         if (r < 0)
-                goto finish;
+                return r;
 
         r = update_json_data(h, flags, "_BOOT_ID", SD_ID128_TO_STRING(journal_boot_id), SIZE_MAX);
         if (r < 0)
-                goto finish;
+                return r;
+
+        xsprintf(usecbuf, USEC_FMT, seqnum);
+        r = update_json_data(h, flags, "__SEQNUM", usecbuf, SIZE_MAX);
+        if (r < 0)
+                return r;
+
+        r = update_json_data(h, flags, "__SEQNUM_ID", SD_ID128_TO_STRING(seqnum_id), SIZE_MAX);
+        if (r < 0)
+                return r;
 
         for (;;) {
                 const void *data;
                 size_t size;
 
                 r = sd_journal_enumerate_data(j, &data, &size);
-                if (r == -EBADMSG) {
+                if (IN_SET(r, -EBADMSG, -EADDRNOTAVAIL)) {
                         log_debug_errno(r, "Skipping message we can't read: %m");
-                        r = 0;
-                        goto finish;
+                        return 0;
                 }
-                if (r < 0) {
-                        log_error_errno(r, "Failed to read journal: %m");
-                        goto finish;
-                }
+                if (r < 0)
+                        return log_error_errno(r, "Failed to read journal: %m");
                 if (r == 0)
                         break;
 
                 r = update_json_data_split(h, flags, output_fields, data, size);
                 if (r < 0)
-                        goto finish;
+                        return r;
         }
 
         array = new(JsonVariant*, hashmap_size(h)*2);
-        if (!array) {
-                r = log_oom();
-                goto finish;
-        }
+        if (!array)
+                return log_oom();
+
+        CLEANUP_ARRAY(array, n, json_variant_unref_many);
 
         HASHMAP_FOREACH(d, h) {
-                assert(d->n_values > 0);
+                assert(json_variant_elements(d->values) > 0);
 
                 array[n++] = json_variant_ref(d->name);
 
-                if (d->n_values == 1)
-                        array[n++] = json_variant_ref(d->values[0]);
-                else {
-                        _cleanup_(json_variant_unrefp) JsonVariant *q = NULL;
-
-                        r = json_variant_new_array(&q, d->values, d->n_values);
-                        if (r < 0) {
-                                log_error_errno(r, "Failed to create JSON array: %m");
-                                goto finish;
-                        }
-
-                        array[n++] = TAKE_PTR(q);
-                }
+                if (json_variant_elements(d->values) == 1)
+                        array[n++] = json_variant_ref(json_variant_by_index(d->values, 0));
+                else
+                        array[n++] = json_variant_ref(d->values);
         }
 
         r = json_variant_new_object(&object, array, n);
-        if (r < 0) {
-                log_error_errno(r, "Failed to allocate JSON object: %m");
-                goto finish;
-        }
+        if (r < 0)
+                return log_error_errno(r, "Failed to allocate JSON object: %m");
 
-        json_variant_dump(object,
-                          output_mode_to_json_format_flags(mode) |
-                          (FLAGS_SET(flags, OUTPUT_COLOR) ? JSON_FORMAT_COLOR : 0),
-                          f, NULL);
-
-        r = 0;
-
-finish:
-        while ((d = hashmap_steal_first(h))) {
-                json_variant_unref(d->name);
-                json_variant_unref_many(d->values, d->n_values);
-                free(d);
-        }
-
-        hashmap_free(h);
-
-        json_variant_unref_many(array, n);
-        free(array);
-
-        return r;
+        return json_variant_dump(object,
+                                 output_mode_to_json_format_flags(mode) |
+                                 (FLAGS_SET(flags, OUTPUT_COLOR) ? JSON_FORMAT_COLOR : 0),
+                                 f, NULL);
 }
 
 static int output_cat_field(
@@ -1186,7 +1188,7 @@ static int output_cat_field(
                 get_log_colors(prio, &color_on, &color_off, &highlight_on);
 
         r = sd_journal_get_data(j, field, &data, &l);
-        if (r == -EBADMSG) {
+        if (IN_SET(r, -EBADMSG, -EADDRNOTAVAIL)) {
                 log_debug_errno(r, "Skipping message we can't read: %m");
                 return 0;
         }
@@ -1258,7 +1260,7 @@ static int output_cat(
                 /* Determine priority of this entry, so that we can color it nicely */
 
                 r = sd_journal_get_data(j, "PRIORITY", &data, &l);
-                if (r == -EBADMSG) {
+                if (IN_SET(r, -EBADMSG, -EADDRNOTAVAIL)) {
                         log_debug_errno(r, "Skipping message we can't read: %m");
                         return 0;
                 }
@@ -1402,7 +1404,7 @@ int show_journal_entry(
                 n_columns = columns();
 
         r = get_display_timestamp(j, &display_ts, &boot_id);
-        if (r == -EBADMSG) {
+        if (IN_SET(r, -EBADMSG, -EADDRNOTAVAIL)) {
                 log_debug_errno(r, "Skipping message we can't read: %m");
                 return 0;
         }
@@ -1733,8 +1735,17 @@ static int get_boot_id_for_machine(const char *machine, sd_id128_t *boot_id) {
         return 0;
 }
 
+int add_match_boot_id(sd_journal *j, sd_id128_t id) {
+        char match[STRLEN("_BOOT_ID=") + SD_ID128_STRING_MAX];
+
+        assert(j);
+        assert(!sd_id128_is_null(id));
+
+        sd_id128_to_string(id, stpcpy(match, "_BOOT_ID="));
+        return sd_journal_add_match(j, match, strlen(match));
+}
+
 int add_match_this_boot(sd_journal *j, const char *machine) {
-        char match[9+32+1] = "_BOOT_ID=";
         sd_id128_t boot_id;
         int r;
 
@@ -1750,8 +1761,7 @@ int add_match_this_boot(sd_journal *j, const char *machine) {
                         return log_error_errno(r, "Failed to get boot id: %m");
         }
 
-        sd_id128_to_string(boot_id, match + 9);
-        r = sd_journal_add_match(j, match, strlen(match));
+        r = add_match_boot_id(j, boot_id);
         if (r < 0)
                 return log_error_errno(r, "Failed to add match: %m");
 

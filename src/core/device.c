@@ -6,7 +6,7 @@
 #include "sd-messages.h"
 
 #include "alloc-util.h"
-#include "bus-error.h"
+#include "bus-common-errors.h"
 #include "dbus-device.h"
 #include "dbus-unit.h"
 #include "device-private.h"
@@ -55,23 +55,30 @@ static int device_by_path(Manager *m, const char *path, Unit **ret) {
 
 static void device_unset_sysfs(Device *d) {
         Hashmap *devices;
-        Device *first;
 
         assert(d);
 
         if (!d->sysfs)
                 return;
 
-        /* Remove this unit from the chain of devices which share the
-         * same sysfs path. */
-        devices = UNIT(d)->manager->devices_by_sysfs;
-        first = hashmap_get(devices, d->sysfs);
-        LIST_REMOVE(same_sysfs, first, d);
+        /* Remove this unit from the chain of devices which share the same sysfs path. */
 
-        if (first)
-                hashmap_remove_and_replace(devices, d->sysfs, first->sysfs, first);
+        devices = UNIT(d)->manager->devices_by_sysfs;
+
+        if (d->same_sysfs_prev)
+                /* If this is not the first unit, then simply remove this unit. */
+                d->same_sysfs_prev->same_sysfs_next = d->same_sysfs_next;
+        else if (d->same_sysfs_next)
+                /* If this is the first unit, replace with the next unit. */
+                assert_se(hashmap_replace(devices, d->same_sysfs_next->sysfs, d->same_sysfs_next) >= 0);
         else
+                /* Otherwise, remove the entry. */
                 hashmap_remove(devices, d->sysfs);
+
+        if (d->same_sysfs_next)
+                d->same_sysfs_next->same_sysfs_prev = d->same_sysfs_prev;
+
+        d->same_sysfs_prev = d->same_sysfs_next = NULL;
 
         d->sysfs = mfree(d->sysfs);
 }
@@ -175,7 +182,7 @@ static void device_set_state(Device *d, DeviceState state) {
         if (state != old_state)
                 log_unit_debug(UNIT(d), "Changed %s -> %s", device_state_to_string(old_state), device_state_to_string(state));
 
-        unit_notify(UNIT(d), state_translation_table[old_state], state_translation_table[state], 0);
+        unit_notify(UNIT(d), state_translation_table[old_state], state_translation_table[state], /* reload_success = */ true);
 }
 
 static void device_found_changed(Device *d, DeviceFound previous, DeviceFound now) {
@@ -612,7 +619,8 @@ static int device_add_udev_wants(Unit *u, sd_device *dev) {
 
                         r = manager_add_job_by_name(u->manager, JOB_START, *i, JOB_FAIL, NULL, &error, NULL);
                         if (r < 0)
-                                log_unit_warning_errno(u, r, "Failed to enqueue SYSTEMD_WANTS= job, ignoring: %s", bus_error_message(&error, r));
+                                log_unit_full_errno(u, sd_bus_error_has_name(&error, BUS_ERROR_NO_SUCH_UNIT) ? LOG_DEBUG : LOG_WARNING, r,
+                                                    "Failed to enqueue %s job, ignoring: %s", property, bus_error_message(&error, r));
                 }
 
         return strv_free_and_replace(d->wants_property, added);
@@ -792,7 +800,7 @@ static int device_setup_devlink_unit_one(Manager *m, const char *devlink, Set **
 
 static int device_setup_extra_units(Manager *m, sd_device *dev, Set **ready_units, Set **not_ready_units) {
         _cleanup_strv_free_ char **aliases = NULL;
-        const char *devlink, *syspath, *devname = NULL;
+        const char *syspath, *devname = NULL;
         Device *l;
         int r;
 
@@ -1009,7 +1017,6 @@ static void device_shutdown(Manager *m) {
 
 static void device_enumerate(Manager *m) {
         _cleanup_(sd_device_enumerator_unrefp) sd_device_enumerator *e = NULL;
-        sd_device *dev;
         int r;
 
         assert(m);
@@ -1133,6 +1140,8 @@ static int device_dispatch_io(sd_device_monitor *monitor, sd_device *dev, void *
                 log_device_warning_errno(dev, r, "Failed to get udev action, ignoring: %m");
                 return 0;
         }
+
+        log_device_debug(dev, "Got '%s' action on syspath '%s'.", device_action_to_string(action), sysfs);
 
         if (action == SD_DEVICE_MOVE)
                 device_remove_old_on_move(m, dev);

@@ -197,7 +197,7 @@ static int backspace_string(int ttyfd, const char *str) {
         size_t m = utf8_n_codepoints(str);
         if (m == SIZE_MAX)
                 m = strlen(str); /* Not a valid UTF-8 string? If so, let's backspace the number of bytes
-                                  * output. Most likely this happened because we are not in an UTF-8 locale,
+                                  * output. Most likely this happened because we are not in a UTF-8 locale,
                                   * and in that case that is the correct thing to do. And even if it's not,
                                   * terminals tend to stop backspacing at the leftmost column, hence
                                   * backspacing too much should be mostly OK. */
@@ -431,20 +431,20 @@ int ask_password_tty(
                         use_color = colors_enabled();
 
                 if (use_color)
-                        (void) loop_write(ttyfd, ANSI_HIGHLIGHT, STRLEN(ANSI_HIGHLIGHT), false);
+                        (void) loop_write(ttyfd, ANSI_HIGHLIGHT, SIZE_MAX, false);
 
-                (void) loop_write(ttyfd, message, strlen(message), false);
+                (void) loop_write(ttyfd, message, SIZE_MAX, false);
                 (void) loop_write(ttyfd, " ", 1, false);
 
                 if (!FLAGS_SET(flags, ASK_PASSWORD_SILENT) && !FLAGS_SET(flags, ASK_PASSWORD_ECHO)) {
                         if (use_color)
-                                (void) loop_write(ttyfd, ansi_grey(), strlen(ansi_grey()), false);
-                        (void) loop_write(ttyfd, PRESS_TAB, strlen(PRESS_TAB), false);
+                                (void) loop_write(ttyfd, ansi_grey(), SIZE_MAX, false);
+                        (void) loop_write(ttyfd, PRESS_TAB, SIZE_MAX, false);
                         press_tab_visible = true;
                 }
 
                 if (use_color)
-                        (void) loop_write(ttyfd, ANSI_NORMAL, STRLEN(ANSI_NORMAL), false);
+                        (void) loop_write(ttyfd, ANSI_NORMAL, SIZE_MAX, false);
 
                 new_termios = old_termios;
                 new_termios.c_lflag &= ~(ICANON|ECHO);
@@ -529,7 +529,7 @@ int ask_password_tty(
 
                 if (c == 4) { /* C-d also known as EOT */
                         if (ttyfd >= 0)
-                                (void) loop_write(ttyfd, SKIPPED, strlen(SKIPPED), false);
+                                (void) loop_write(ttyfd, SKIPPED, SIZE_MAX, false);
 
                         goto skipped;
                 }
@@ -579,7 +579,7 @@ int ask_password_tty(
                                  * first key (and only as first key), or ... */
 
                                 if (ttyfd >= 0)
-                                        (void) loop_write(ttyfd, NO_ECHO, strlen(NO_ECHO), false);
+                                        (void) loop_write(ttyfd, NO_ECHO, SIZE_MAX, false);
 
                         } else if (ttyfd >= 0)
                                 (void) loop_write(ttyfd, "\a", 1, false);
@@ -592,7 +592,7 @@ int ask_password_tty(
                         /* ... or by pressing TAB at any time. */
 
                         if (ttyfd >= 0)
-                                (void) loop_write(ttyfd, NO_ECHO, strlen(NO_ECHO), false);
+                                (void) loop_write(ttyfd, NO_ECHO, SIZE_MAX, false);
 
                 } else if (p >= sizeof(passphrase)-1) {
 

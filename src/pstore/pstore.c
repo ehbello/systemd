@@ -77,14 +77,9 @@ static int parse_config(void) {
                 {}
         };
 
-        return config_parse_many_nulstr(
-                        PKGSYSCONFDIR "/pstore.conf",
-                        CONF_PATHS_NULSTR("systemd/pstore.conf.d"),
-                        "PStore\0",
-                        config_item_table_lookup, items,
-                        CONFIG_PARSE_WARN,
-                        NULL,
-                        NULL);
+        return config_parse_config_file("pstore.conf", "PStore\0",
+                                        config_item_table_lookup, items,
+                                        CONFIG_PARSE_WARN, NULL);
 }
 
 /* File list handling - PStoreEntry is the struct and
@@ -157,7 +152,7 @@ static int move_file(PStoreEntry *pe, const char *subdir1, const char *subdir2) 
                 r = mkdir_parents(ofd_path, 0755);
                 if (r < 0)
                         return log_error_errno(r, "Failed to create directory %s: %m", ofd_path);
-                r = copy_file_atomic(ifd_path, ofd_path, 0600, 0, 0, COPY_REPLACE);
+                r = copy_file_atomic(ifd_path, ofd_path, 0600, COPY_REPLACE);
                 if (r < 0)
                         return log_error_errno(r, "Failed to copy_file_atomic: %s to %s", ifd_path, ofd_path);
         }
@@ -178,6 +173,9 @@ static int append_dmesg(PStoreEntry *pe, const char *subdir1, const char *subdir
         ssize_t wr;
 
         assert(pe);
+
+        if (arg_storage != PSTORE_STORAGE_EXTERNAL)
+                return 0;
 
         if (pe->content_size == 0)
                 return 0;
@@ -201,7 +199,7 @@ static int append_dmesg(PStoreEntry *pe, const char *subdir1, const char *subdir
 static int process_dmesg_files(PStoreList *list) {
         /* Move files, reconstruct dmesg.txt */
         _cleanup_free_ char *erst_subdir = NULL;
-        uint64_t last_record_id = 0;
+        unsigned long long last_record_id = 0;
 
         /* When dmesg is written into pstore, it is done so in small chunks, whatever the exchange buffer
          * size is with the underlying pstore backend (ie. EFI may be ~2KiB), which means an example
@@ -257,9 +255,9 @@ static int process_dmesg_files(PStoreList *list) {
                 } else if ((p = startswith(pe->dirent.d_name, "dmesg-erst-"))) {
                         /* For the ERST backend, the record is a monotonically increasing number, seeded as
                          * a timestamp. See linux/drivers/acpi/apei/erst.c in erst_writer(). */
-                        uint64_t record_id;
+                        unsigned long long record_id;
 
-                        if (safe_atou64(p, &record_id) < 0)
+                        if (safe_atollu_full(p, 10, &record_id) < 0)
                                 continue;
                         if (last_record_id - 1 != record_id)
                                 /* A discontinuity in the number has been detected, this current record id
@@ -283,7 +281,7 @@ static int process_dmesg_files(PStoreList *list) {
 }
 
 static int list_files(PStoreList *list, const char *sourcepath) {
-        _cleanup_(closedirp) DIR *dirp = NULL;
+        _cleanup_closedir_ DIR *dirp = NULL;
         int r;
 
         dirp = opendir(sourcepath);

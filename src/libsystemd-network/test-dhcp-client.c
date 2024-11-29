@@ -9,6 +9,9 @@
 #include <stdio.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#if HAVE_VALGRIND_VALGRIND_H
+#  include <valgrind/valgrind.h>
+#endif
 
 #include "sd-dhcp-client.h"
 #include "sd-event.h"
@@ -186,7 +189,7 @@ static int check_options(uint8_t code, uint8_t len, const void *option, void *us
 
 int dhcp_network_send_raw_socket(int s, const union sockaddr_union *link, const void *packet, size_t len) {
         size_t size;
-        _cleanup_free_ DHCPPacket *discover;
+        _cleanup_free_ DHCPPacket *discover = NULL;
         uint16_t ip_check, udp_check;
 
         assert_se(s >= 0);
@@ -546,11 +549,12 @@ int main(int argc, char *argv[]) {
         test_discover_message(e);
         test_addr_acq(e);
 
-#if VALGRIND
+#if HAVE_VALGRIND_VALGRIND_H
         /* Make sure the async_close thread has finished.
          * valgrind would report some of the phread_* structures
          * as not cleaned up properly. */
-        sleep(1);
+        if (RUNNING_ON_VALGRIND)
+                sleep(1);
 #endif
 
         return 0;

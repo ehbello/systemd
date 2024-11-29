@@ -158,11 +158,11 @@ helper_check_device_units() {(
 
     local i
 
-    for (( i = 0; i < 20; i++ )); do
+    for i in {1..20}; do
+        (( i > 1 )) && sleep 0.5
         if check_device_units 0 "$@"; then
             return 0
         fi
-        sleep .5
     done
 
     check_device_units 1 "$@"
@@ -174,14 +174,62 @@ testcase_megasas2_basic() {
 }
 
 testcase_nvme_basic() {
+    local expected_symlinks=()
+    local i
+
+    for (( i = 0; i < 5; i++ )); do
+        expected_symlinks+=(
+            # both replace mode provides the same devlink
+            /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_deadbeef"$i"
+            # with nsid
+            /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_deadbeef"$i"_1
+        )
+    done
+    for (( i = 5; i < 10; i++ )); do
+        expected_symlinks+=(
+            # old replace mode
+            /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl__deadbeef_"$i"
+            # newer replace mode
+            /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_____deadbeef__"$i"
+            # with nsid
+            /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_____deadbeef__"$i"_1
+        )
+    done
+    for (( i = 10; i < 15; i++ )); do
+        expected_symlinks+=(
+            # old replace mode does not provide devlink, as serial contains "/"
+            # newer replace mode
+            /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_____dead_beef_"$i"
+            # with nsid
+            /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_____dead_beef_"$i"_1
+        )
+    done
+    for (( i = 15; i < 20; i++ )); do
+        expected_symlinks+=(
+            # old replace mode does not provide devlink, as serial contains "/"
+            # newer replace mode
+            /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_dead_.._.._beef_"$i"
+            # with nsid
+            /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_dead_.._.._beef_"$i"_1
+        )
+    done
+
+    udevadm settle
+    ls /dev/disk/by-id
+    for i in "${expected_symlinks[@]}"; do
+        udevadm wait --settle --timeout=30 "$i"
+    done
+
     lsblk --noheadings | grep "^nvme"
-    [[ "$(lsblk --noheadings | grep -c "^nvme")" -ge 28 ]]
+    [[ "$(lsblk --noheadings | grep -c "^nvme")" -ge 20 ]]
 }
 
 testcase_nvme_subsystem() {
     local expected_symlinks=(
         # Controller(s)
         /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_deadbeef
+        /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_deadbeef_16
+        /dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_deadbeef_17
         # Shared namespaces
         /dev/disk/by-path/pci-*-nvme-16
         /dev/disk/by-path/pci-*-nvme-17
@@ -302,7 +350,7 @@ EOF
     rm -fr "$mpoint"
 }
 
-testcase_simultaneous_events() {
+testcase_simultaneous_events_1() {
     local disk expected i iterations key link num_part part partscript rule target timeout
     local -a devices symlinks
     local -A running
@@ -395,6 +443,75 @@ EOF
     udevadm control --reload
 }
 
+testcase_simultaneous_events_2() {
+    local disk expected i iterations key link num_part part script_dir target timeout
+    local -a devices symlinks
+    local -A running
+
+    script_dir="$(mktemp --directory "/tmp/test-udev-storage.script.XXXXXXXXXX")"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$script_dir'" RETURN
+
+    if [[ -v ASAN_OPTIONS || "$(systemd-detect-virt -v)" == "qemu" ]]; then
+        num_part=20
+        iterations=1
+        timeout=2400
+    else
+        num_part=100
+        iterations=3
+        timeout=300
+    fi
+
+    for disk in {0..9}; do
+        link="/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_deadbeeftest${disk}"
+        target="$(readlink -f "$link")"
+        if [[ ! -b "$target" ]]; then
+            echo "ERROR: failed to find the test SCSI block device $link"
+            return 1
+        fi
+
+        devices+=("$target")
+    done
+
+    for ((i = 1; i <= iterations; i++)); do
+        cat >"$script_dir/partscript-$i" <<EOF
+$(for ((part = 1; part <= num_part; part++)); do printf 'name="testlabel-%d", size=1M\n' "$i"; done)
+EOF
+    done
+
+    echo "## $iterations iterations start: $(date '+%H:%M:%S.%N')"
+    for ((i = 1; i <= iterations; i++)); do
+
+        for disk in {0..9}; do
+            udevadm lock --device="${devices[$disk]}" sfdisk -q --delete "${devices[$disk]}" &
+            running[$disk]=$!
+        done
+
+        for key in "${!running[@]}"; do
+            wait "${running[$key]}"
+            unset "running[$key]"
+        done
+
+        for disk in {0..9}; do
+            udevadm lock --device="${devices[$disk]}" sfdisk -q -X gpt "${devices[$disk]}" <"$script_dir/partscript-$i" &
+            running[$disk]=$!
+        done
+
+        for key in "${!running[@]}"; do
+            wait "${running[$key]}"
+            unset "running[$key]"
+        done
+
+        udevadm wait --settle --timeout="$timeout" "${devices[@]}" "/dev/disk/by-partlabel/testlabel-$i"
+    done
+    echo "## $iterations iterations end: $(date '+%H:%M:%S.%N')"
+}
+
+testcase_simultaneous_events() {
+    testcase_simultaneous_events_1
+    testcase_simultaneous_events_2
+}
+
 testcase_lvm_basic() {
     local i iterations partitions part timeout
     local vgroup="MyTestGroup$RANDOM"
@@ -418,7 +535,7 @@ testcase_lvm_basic() {
     lvm vgs
     lvm vgchange -ay "$vgroup"
     lvm lvcreate -y -L 4M "$vgroup" -n mypart1
-    lvm lvcreate -y -L 8M "$vgroup" -n mypart2
+    lvm lvcreate -y -L 32M "$vgroup" -n mypart2
     lvm lvs
     udevadm wait --settle --timeout="$timeout" "/dev/$vgroup/mypart1" "/dev/$vgroup/mypart2"
     mkfs.ext4 -L mylvpart1 "/dev/$vgroup/mypart1"
@@ -461,6 +578,42 @@ testcase_lvm_basic() {
     udevadm wait --settle --timeout="$timeout" "/dev/$vgroup/mypart1" "/dev/$vgroup/mypart2"
     helper_check_device_symlinks "/dev/disk" "/dev/$vgroup"
     helper_check_device_units
+
+    # Do not "unready" suspended encrypted devices w/o superblock info
+    # See:
+    #   - https://github.com/systemd/systemd/pull/24177
+    #   - https://bugzilla.redhat.com/show_bug.cgi?id=1985288
+    dd if=/dev/urandom of=/etc/lvm_keyfile bs=64 count=1 iflag=fullblock
+    chmod 0600 /etc/lvm_keyfile
+    # Intentionally use weaker cipher-related settings, since we don't care
+    # about security here as it's a throwaway LUKS partition
+    cryptsetup luksFormat -q --use-urandom --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
+                          "/dev/$vgroup/mypart2" /etc/lvm_keyfile
+    # Mount the LUKS partition & create a filesystem on it
+    mkdir -p /tmp/lvmluksmnt
+    cryptsetup open --key-file=/etc/lvm_keyfile "/dev/$vgroup/mypart2" "lvmluksmap"
+    udevadm wait --settle --timeout="$timeout" "/dev/mapper/lvmluksmap"
+    mkfs.ext4 -L lvmluksfs "/dev/mapper/lvmluksmap"
+    udevadm wait --settle --timeout="$timeout" "/dev/disk/by-label/lvmluksfs"
+    # Make systemd "interested" in the mount by adding it to /etc/fstab
+    echo "/dev/disk/by-label/lvmluksfs /tmp/lvmluksmnt ext4 defaults 0 2" >>/etc/fstab
+    systemctl daemon-reload
+    mount "/tmp/lvmluksmnt"
+    mountpoint "/tmp/lvmluksmnt"
+    # Temporarily suspend the LUKS device and trigger udev - basically what `cryptsetup resize`
+    # does but in a more deterministic way suitable for a test/reproducer
+    for _ in {0..5}; do
+        dmsetup suspend "/dev/mapper/lvmluksmap"
+        udevadm trigger -v --settle "/dev/mapper/lvmluksmap"
+        dmsetup resume "/dev/mapper/lvmluksmap"
+        # The mount should survive this sequence of events
+        mountpoint "/tmp/lvmluksmnt"
+    done
+    # Cleanup
+    umount "/tmp/lvmluksmnt"
+    cryptsetup close "/dev/mapper/lvmluksmap"
+    sed -i "/lvmluksfs/d" "/etc/fstab"
+    systemctl daemon-reload
 
     # Disable the VG and check symlinks...
     lvm vgchange -an "$vgroup"
@@ -543,7 +696,7 @@ testcase_btrfs_basic() {
     echo "Single device: default settings"
     uuid="deadbeef-dead-dead-beef-000000000000"
     label="btrfs_root"
-    udevadm lock --device="${devices[0]}" mkfs.btrfs -L "$label" -U "$uuid" "${devices[0]}"
+    udevadm lock --device="${devices[0]}" mkfs.btrfs -f -L "$label" -U "$uuid" "${devices[0]}"
     udevadm wait --settle --timeout=30 "${devices[0]}" "/dev/disk/by-uuid/$uuid" "/dev/disk/by-label/$label"
     btrfs filesystem show
     helper_check_device_symlinks
@@ -561,7 +714,7 @@ name="diskpart3", size=85M
 name="diskpart4", size=85M
 EOF
     udevadm wait --settle --timeout=30 /dev/disk/by-partlabel/diskpart{1..4}
-    udevadm lock --device="${devices[0]}" mkfs.btrfs -d single -m raid1 -L "$label" -U "$uuid" /dev/disk/by-partlabel/diskpart{1..4}
+    udevadm lock --device="${devices[0]}" mkfs.btrfs -f -d single -m raid1 -L "$label" -U "$uuid" /dev/disk/by-partlabel/diskpart{1..4}
     udevadm wait --settle --timeout=30 "/dev/disk/by-uuid/$uuid" "/dev/disk/by-label/$label"
     btrfs filesystem show
     helper_check_device_symlinks
@@ -577,7 +730,7 @@ EOF
             --device=/dev/disk/by-id/ata-foobar_deadbeefbtrfs1 \
             --device=/dev/disk/by-id/ata-foobar_deadbeefbtrfs2 \
             --device=/dev/disk/by-id/ata-foobar_deadbeefbtrfs3 \
-            mkfs.btrfs -M -d raid10 -m raid10 -L "$label" -U "$uuid" "${devices[@]}"
+            mkfs.btrfs -f -M -d raid10 -m raid10 -L "$label" -U "$uuid" "${devices[@]}"
     udevadm wait --settle --timeout=30 "/dev/disk/by-uuid/$uuid" "/dev/disk/by-label/$label"
     btrfs filesystem show
     helper_check_device_symlinks
@@ -617,7 +770,7 @@ EOF
             --device=/dev/mapper/encbtrfs1 \
             --device=/dev/mapper/encbtrfs2 \
             --device=/dev/mapper/encbtrfs3 \
-            mkfs.btrfs -M -d raid1 -m raid1 -L "$label" -U "$uuid" /dev/mapper/encbtrfs{0..3}
+            mkfs.btrfs -f -M -d raid1 -m raid1 -L "$label" -U "$uuid" /dev/mapper/encbtrfs{0..3}
     udevadm wait --settle --timeout=30 "/dev/disk/by-uuid/$uuid" "/dev/disk/by-label/$label"
     btrfs filesystem show
     helper_check_device_symlinks
@@ -1006,8 +1159,6 @@ testcase_mdadm_lvm() {
     helper_check_device_units
 }
 
-: >/failed
-
 udevadm settle
 udevadm control --log-level debug
 lsblk -a
@@ -1034,4 +1185,3 @@ udevadm control --log-level info
 systemctl status systemd-udevd
 
 touch /testok
-rm /failed

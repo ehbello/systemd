@@ -49,6 +49,7 @@ static volatile unsigned cached_columns = 0;
 static volatile unsigned cached_lines = 0;
 
 static volatile int cached_on_tty = -1;
+static volatile int cached_on_dev_null = -1;
 static volatile int cached_color_mode = _COLOR_INVALID;
 static volatile int cached_underline_enabled = -1;
 
@@ -340,7 +341,7 @@ int open_terminal(const char *name, int mode) {
                 if (c >= 20)
                         return -errno;
 
-                (void) usleep(50 * USEC_PER_MSEC);
+                (void) usleep_safe(50 * USEC_PER_MSEC);
                 c++;
         }
 
@@ -588,9 +589,20 @@ int make_console_stdio(void) {
                         return log_error_errno(r, "Failed to make /dev/null stdin/stdout/stderr: %m");
 
         } else {
-                r = reset_terminal_fd(fd, true);
+                unsigned rows, cols;
+
+                r = reset_terminal_fd(fd, /* switch_to_text= */ true);
                 if (r < 0)
                         log_warning_errno(r, "Failed to reset terminal, ignoring: %m");
+
+                r = proc_cmdline_tty_size("/dev/console", &rows, &cols);
+                if (r < 0)
+                        log_warning_errno(r, "Failed to get terminal size, ignoring: %m");
+                else {
+                        r = terminal_set_size_fd(fd, NULL, rows, cols);
+                        if (r < 0)
+                                log_warning_errno(r, "Failed to set terminal size, ignoring: %m");
+                }
 
                 r = rearrange_stdio(fd, fd, fd); /* This invalidates 'fd' both on success and on failure. */
                 if (r < 0)
@@ -881,6 +893,54 @@ int terminal_set_size_fd(int fd, const char *ident, unsigned rows, unsigned cols
         return 0;
 }
 
+int proc_cmdline_tty_size(const char *tty, unsigned *ret_rows, unsigned *ret_cols) {
+        _cleanup_free_ char *rowskey = NULL, *rowsvalue = NULL, *colskey = NULL, *colsvalue = NULL;
+        unsigned rows = UINT_MAX, cols = UINT_MAX;
+        int r;
+
+        assert(tty);
+
+        if (!ret_rows && !ret_cols)
+                return 0;
+
+        tty = skip_dev_prefix(tty);
+        if (!in_charset(tty, ALPHANUMERICAL))
+                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "%s contains non-alphanumeric characters", tty);
+
+        rowskey = strjoin("systemd.tty.rows.", tty);
+        if (!rowskey)
+                return -ENOMEM;
+
+        colskey = strjoin("systemd.tty.columns.", tty);
+        if (!colskey)
+                return -ENOMEM;
+
+        r = proc_cmdline_get_key_many(/* flags = */ 0,
+                                      rowskey, &rowsvalue,
+                                      colskey, &colsvalue);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to read TTY size of %s from kernel cmdline: %m", tty);
+
+        if (rowsvalue) {
+                r = safe_atou(rowsvalue, &rows);
+                if (r < 0)
+                        return log_debug_errno(r, "Failed to parse %s=%s: %m", rowskey, rowsvalue);
+        }
+
+        if (colsvalue) {
+                r = safe_atou(colsvalue, &cols);
+                if (r < 0)
+                        return log_debug_errno(r, "Failed to parse %s=%s: %m", colskey, colsvalue);
+        }
+
+        if (ret_rows)
+                *ret_rows = rows;
+        if (ret_cols)
+                *ret_cols = cols;
+
+        return 0;
+}
+
 /* intended to be used as a SIGWINCH sighandler */
 void columns_lines_cache_reset(int signum) {
         cached_columns = 0;
@@ -894,6 +954,7 @@ void reset_terminal_feature_caches(void) {
         cached_color_mode = _COLOR_INVALID;
         cached_underline_enabled = -1;
         cached_on_tty = -1;
+        cached_on_dev_null = -1;
 }
 
 bool on_tty(void) {
@@ -977,7 +1038,7 @@ int get_ctty_devnr(pid_t pid, dev_t *d) {
                    &ttynr) != 1)
                 return -EIO;
 
-        if (major(ttynr) == 0 && minor(ttynr) == 0)
+        if (devnum_is_zero(ttynr))
                 return -ENXIO;
 
         if (d)
@@ -1224,6 +1285,20 @@ int open_terminal_in_namespace(pid_t pid, const char *name, int mode) {
         return receive_one_fd(pair[0], 0);
 }
 
+static bool on_dev_null(void) {
+        struct stat dst, ost, est;
+
+        if (cached_on_dev_null >= 0)
+                return cached_on_dev_null;
+
+        if (stat("/dev/null", &dst) < 0 || fstat(STDOUT_FILENO, &ost) < 0 || fstat(STDERR_FILENO, &est) < 0)
+                cached_on_dev_null = false;
+        else
+                cached_on_dev_null = stat_inode_same(&dst, &ost) && stat_inode_same(&dst, &est);
+
+        return cached_on_dev_null;
+}
+
 static bool getenv_terminal_is_dumb(void) {
         const char *e;
 
@@ -1235,7 +1310,7 @@ static bool getenv_terminal_is_dumb(void) {
 }
 
 bool terminal_is_dumb(void) {
-        if (!on_tty())
+        if (!on_tty() && !on_dev_null())
                 return true;
 
         return getenv_terminal_is_dumb();

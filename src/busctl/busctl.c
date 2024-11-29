@@ -21,12 +21,14 @@
 #include "json.h"
 #include "log.h"
 #include "main-func.h"
+#include "memstream-util.h"
 #include "os-util.h"
 #include "pager.h"
 #include "parse-argument.h"
 #include "parse-util.h"
 #include "path-util.h"
 #include "pretty-print.h"
+#include "runtime-scope.h"
 #include "set.h"
 #include "sort-util.h"
 #include "strv.h"
@@ -38,7 +40,7 @@
 static JsonFormatFlags arg_json_format_flags = JSON_FORMAT_OFF;
 static PagerFlags arg_pager_flags = 0;
 static bool arg_legend = true;
-static bool arg_full = false;
+static int arg_full = -1;
 static const char *arg_address = NULL;
 static bool arg_unique = false;
 static bool arg_acquired = false;
@@ -47,7 +49,7 @@ static bool arg_show_machine = false;
 static char **arg_matches = NULL;
 static BusTransport arg_transport = BUS_TRANSPORT_LOCAL;
 static const char *arg_host = NULL;
-static bool arg_user = false;
+static RuntimeScope arg_runtime_scope = RUNTIME_SCOPE_SYSTEM;
 static size_t arg_snaplen = 4096;
 static bool arg_list = false;
 static bool arg_quiet = false;
@@ -75,6 +77,8 @@ static int acquire_bus(bool set_monitor, sd_bus **ret) {
         r = sd_bus_new(&bus);
         if (r < 0)
                 return log_error_errno(r, "Failed to allocate bus: %m");
+
+        (void) sd_bus_set_description(bus, "busctl");
 
         if (set_monitor) {
                 r = sd_bus_set_monitor(bus, true);
@@ -109,10 +113,21 @@ static int acquire_bus(bool set_monitor, sd_bus **ret) {
                 switch (arg_transport) {
 
                 case BUS_TRANSPORT_LOCAL:
-                        if (arg_user)
+
+                        switch (arg_runtime_scope) {
+
+                        case RUNTIME_SCOPE_USER:
                                 r = bus_set_address_user(bus);
-                        else
+                                break;
+
+                        case RUNTIME_SCOPE_SYSTEM:
                                 r = bus_set_address_system(bus);
+                                break;
+
+                        default:
+                                assert_not_reached();
+                        }
+
                         break;
 
                 case BUS_TRANSPORT_REMOTE:
@@ -120,7 +135,7 @@ static int acquire_bus(bool set_monitor, sd_bus **ret) {
                         break;
 
                 case BUS_TRANSPORT_MACHINE:
-                        r = bus_set_address_machine(bus, arg_user, arg_host);
+                        r = bus_set_address_machine(bus, arg_runtime_scope, arg_host);
                         break;
 
                 default:
@@ -203,7 +218,7 @@ static int list_bus_names(int argc, char **argv, void *userdata) {
         if (!table)
                 return log_oom();
 
-        if (arg_full)
+        if (arg_full > 0)
                 table_set_width(table, 0);
 
         r = table_set_align_percent(table, table_get_cell(table, 0, COLUMN_PID), 100);
@@ -357,9 +372,6 @@ static int list_bus_names(int argc, char **argv, void *userdata) {
 }
 
 static void print_subtree(const char *prefix, const char *path, char **l) {
-        const char *vertical, *space;
-        char **n;
-
         /* We assume the list is sorted. Let's first skip over the
          * entry we are looking at. */
         for (;;) {
@@ -372,11 +384,13 @@ static void print_subtree(const char *prefix, const char *path, char **l) {
                 l++;
         }
 
-        vertical = strjoina(prefix, special_glyph(SPECIAL_GLYPH_TREE_VERTICAL));
-        space = strjoina(prefix, special_glyph(SPECIAL_GLYPH_TREE_SPACE));
+        const char
+                *vertical = strjoina(prefix, special_glyph(SPECIAL_GLYPH_TREE_VERTICAL)),
+                *space = strjoina(prefix, special_glyph(SPECIAL_GLYPH_TREE_SPACE));
 
         for (;;) {
                 bool has_more = false;
+                char **n;
 
                 if (!*l || !path_startswith(*l, path))
                         break;
@@ -394,7 +408,7 @@ static void print_subtree(const char *prefix, const char *path, char **l) {
                         n++;
                 }
 
-                printf("%s%s%s\n",
+                printf("%s%s %s\n",
                        prefix,
                        special_glyph(has_more ? SPECIAL_GLYPH_TREE_BRANCH : SPECIAL_GLYPH_TREE_RIGHT),
                        *l);
@@ -961,8 +975,8 @@ static int introspect(int argc, char **argv, void *userdata) {
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply_xml = NULL;
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(member_set_freep) Set *members = NULL;
-        unsigned name_width, type_width, signature_width, result_width, j, k = 0;
-        Member *m, **sorted = NULL;
+        unsigned name_width, type_width, signature_width, result_width;
+        Member *m;
         const char *xml;
         int r;
 
@@ -1022,12 +1036,12 @@ static int introspect(int argc, char **argv, void *userdata) {
                         return bus_log_parse_error(r);
 
                 for (;;) {
-                        _cleanup_fclose_ FILE *mf = NULL;
+                        _cleanup_(memstream_done) MemStream ms = {};
                         _cleanup_free_ char *buf = NULL;
                         const char *name, *contents;
-                        size_t sz = 0;
                         Member *z;
                         char type;
+                        FILE *mf;
 
                         r = sd_bus_message_enter_container(reply, 'e', "sv");
                         if (r < 0)
@@ -1049,7 +1063,7 @@ static int introspect(int argc, char **argv, void *userdata) {
                         if (r < 0)
                                 return bus_log_parse_error(r);
 
-                        mf = open_memstream_unlocked(&buf, &sz);
+                        mf = memstream_init(&ms);
                         if (!mf)
                                 return log_oom();
 
@@ -1057,7 +1071,9 @@ static int introspect(int argc, char **argv, void *userdata) {
                         if (r < 0)
                                 return bus_log_parse_error(r);
 
-                        mf = safe_fclose(mf);
+                        r = memstream_finalize(&ms, &buf, NULL);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to flush and close memstream: %m");
 
                         z = set_get(members, &((Member) {
                                                 .type = "property",
@@ -1086,7 +1102,8 @@ static int introspect(int argc, char **argv, void *userdata) {
         signature_width = strlen("SIGNATURE");
         result_width = strlen("RESULT/VALUE");
 
-        sorted = newa(Member*, set_size(members));
+        Member **sorted = newa(Member*, set_size(members));
+        size_t k = 0;
 
         SET_FOREACH(m, members) {
                 if (argv[3] && !streq(argv[3], m->interface))
@@ -1108,7 +1125,7 @@ static int introspect(int argc, char **argv, void *userdata) {
                 sorted[k++] = m;
         }
 
-        if (result_width > 40)
+        if (result_width > 40 && arg_full <= 0)
                 result_width = 40;
 
         typesafe_qsort(sorted, k, member_compare_funcp);
@@ -1123,7 +1140,7 @@ static int introspect(int argc, char **argv, void *userdata) {
                        (int) result_width, "RESULT/VALUE",
                        "FLAGS");
 
-        for (j = 0; j < k; j++) {
+        for (size_t j = 0; j < k; j++) {
                 _cleanup_free_ char *ellipsized = NULL;
                 const char *rv;
                 bool is_interface;
@@ -1466,7 +1483,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atou8(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse '%s' as byte (unsigned 8bit integer): %m", v);
+                                return log_error_errno(r, "Failed to parse '%s' as byte (unsigned 8-bit integer): %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1477,7 +1494,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atoi16(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse '%s' as signed 16bit integer: %m", v);
+                                return log_error_errno(r, "Failed to parse '%s' as signed 16-bit integer: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1488,7 +1505,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atou16(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse '%s' as unsigned 16bit integer: %m", v);
+                                return log_error_errno(r, "Failed to parse '%s' as unsigned 16-bit integer: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1499,7 +1516,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atoi32(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse '%s' as signed 32bit integer: %m", v);
+                                return log_error_errno(r, "Failed to parse '%s' as signed 32-bit integer: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1510,7 +1527,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atou32(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse '%s' as unsigned 32bit integer: %m", v);
+                                return log_error_errno(r, "Failed to parse '%s' as unsigned 32-bit integer: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1521,7 +1538,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atoi64(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse '%s' as signed 64bit integer: %m", v);
+                                return log_error_errno(r, "Failed to parse '%s' as signed 64-bit integer: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1532,7 +1549,7 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
                         r = safe_atou64(v, &z);
                         if (r < 0)
-                                return log_error_errno(r, "Failed to parse '%s' as unsigned 64bit integer: %m", v);
+                                return log_error_errno(r, "Failed to parse '%s' as unsigned 64-bit integer: %m", v);
 
                         r = sd_bus_message_append_basic(m, t, &z);
                         break;
@@ -1654,9 +1671,22 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
 
 static int json_transform_one(sd_bus_message *m, JsonVariant **ret);
 
+static int json_transform_and_append(sd_bus_message *m, JsonVariant **ret) {
+        _cleanup_(json_variant_unrefp) JsonVariant *element = NULL;
+        int r;
+
+        assert(m);
+        assert(ret);
+
+        r = json_transform_one(m, &element);
+        if (r < 0)
+                return r;
+
+        return json_variant_append_array(ret, element);
+}
+
 static int json_transform_array_or_struct(sd_bus_message *m, JsonVariant **ret) {
-        JsonVariant **elements = NULL;
-        size_t n_elements = 0;
+        _cleanup_(json_variant_unrefp) JsonVariant *array = NULL;
         int r;
 
         assert(m);
@@ -1664,32 +1694,21 @@ static int json_transform_array_or_struct(sd_bus_message *m, JsonVariant **ret) 
 
         for (;;) {
                 r = sd_bus_message_at_end(m, false);
-                if (r < 0) {
-                        bus_log_parse_error(r);
-                        goto finish;
-                }
+                if (r < 0)
+                        return bus_log_parse_error(r);
                 if (r > 0)
                         break;
 
-                if (!GREEDY_REALLOC(elements, n_elements + 1)) {
-                        r = log_oom();
-                        goto finish;
-                }
-
-                r = json_transform_one(m, elements + n_elements);
+                r = json_transform_and_append(m, &array);
                 if (r < 0)
-                        goto finish;
-
-                n_elements++;
+                        return r;
         }
 
-        r = json_variant_new_array(ret, elements, n_elements);
+        if (!array)
+                return json_variant_new_array(ret, NULL, 0);
 
-finish:
-        json_variant_unref_many(elements, n_elements);
-        free(elements);
-
-        return r;
+        *ret = TAKE_PTR(array);
+        return 0;
 }
 
 static int json_transform_variant(sd_bus_message *m, const char *contents, JsonVariant **ret) {
@@ -1713,8 +1732,7 @@ static int json_transform_variant(sd_bus_message *m, const char *contents, JsonV
 }
 
 static int json_transform_dict_array(sd_bus_message *m, JsonVariant **ret) {
-        JsonVariant **elements = NULL;
-        size_t n_elements = 0;
+        _cleanup_(json_variant_unrefp) JsonVariant *array = NULL;
         int r;
 
         assert(m);
@@ -1725,10 +1743,8 @@ static int json_transform_dict_array(sd_bus_message *m, JsonVariant **ret) {
                 char type;
 
                 r = sd_bus_message_at_end(m, false);
-                if (r < 0) {
-                        bus_log_parse_error(r);
-                        goto finish;
-                }
+                if (r < 0)
+                        return bus_log_parse_error(r);
                 if (r > 0)
                         break;
 
@@ -1738,43 +1754,28 @@ static int json_transform_dict_array(sd_bus_message *m, JsonVariant **ret) {
 
                 assert(type == 'e');
 
-                if (!GREEDY_REALLOC(elements, n_elements + 2)) {
-                        r = log_oom();
-                        goto finish;
-                }
-
                 r = sd_bus_message_enter_container(m, type, contents);
-                if (r < 0) {
-                        bus_log_parse_error(r);
-                        goto finish;
-                }
-
-                r = json_transform_one(m, elements + n_elements);
                 if (r < 0)
-                        goto finish;
+                        return bus_log_parse_error(r);
 
-                n_elements++;
-
-                r = json_transform_one(m, elements + n_elements);
+                r = json_transform_and_append(m, &array);
                 if (r < 0)
-                        goto finish;
+                        return r;
 
-                n_elements++;
+                r = json_transform_and_append(m, &array);
+                if (r < 0)
+                        return r;
 
                 r = sd_bus_message_exit_container(m);
-                if (r < 0) {
-                        bus_log_parse_error(r);
-                        goto finish;
-                }
+                if (r < 0)
+                        return bus_log_parse_error(r);
         }
 
-        r = json_variant_new_object(ret, elements, n_elements);
+        if (!array)
+                return json_variant_new_array(ret, NULL, 0);
 
-finish:
-        json_variant_unref_many(elements, n_elements);
-        free(elements);
-
-        return r;
+        *ret = TAKE_PTR(array);
+        return 0;
 }
 
 static int json_transform_one(sd_bus_message *m, JsonVariant **ret) {
@@ -2295,6 +2296,7 @@ static int help(void) {
                "     --verbose             Show result values in long format\n"
                "     --json=MODE           Output as JSON\n"
                "  -j                       Same as --json=pretty on tty, --json=short otherwise\n"
+               "     --xml-interface       Dump the XML description in introspect command\n"
                "     --expect-reply=BOOL   Expect a method call reply\n"
                "     --auto-start=BOOL     Auto-start destination service\n"
                "     --allow-interactive-authorization=BOOL\n"
@@ -2405,11 +2407,11 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_USER:
-                        arg_user = true;
+                        arg_runtime_scope = RUNTIME_SCOPE_USER;
                         break;
 
                 case ARG_SYSTEM:
-                        arg_user = false;
+                        arg_runtime_scope = RUNTIME_SCOPE_SYSTEM;
                         break;
 
                 case ARG_ADDRESS:
@@ -2537,6 +2539,9 @@ static int parse_argv(int argc, char *argv[]) {
                 default:
                         assert_not_reached();
                 }
+
+        if (arg_full < 0)
+                arg_full = terminal_is_dumb();
 
         return 1;
 }

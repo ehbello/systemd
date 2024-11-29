@@ -7,6 +7,7 @@
 #include "fd-util.h"
 #include "fileio.h"
 #include "format-util.h"
+#include "memstream-util.h"
 #include "oomd-util.h"
 #include "parse-util.h"
 #include "path-util.h"
@@ -281,25 +282,20 @@ int oomd_cgroup_kill(const char *path, bool recurse, bool dry_run) {
 typedef void (*dump_candidate_func)(const OomdCGroupContext *ctx, FILE *f, const char *prefix);
 
 static int dump_kill_candidates(OomdCGroupContext **sorted, int n, int dump_until, dump_candidate_func dump_func) {
-        /* Try dumping top offendors, ignoring any errors that might happen. */
-        _cleanup_free_ char *dump = NULL;
-        _cleanup_fclose_ FILE *f = NULL;
-        int r;
-        size_t size;
+        _cleanup_(memstream_done) MemStream m = {};
+        FILE *f;
 
-        f = open_memstream_unlocked(&dump, &size);
+        /* Try dumping top offendors, ignoring any errors that might happen. */
+
+        f = memstream_init(&m);
         if (!f)
-                return -errno;
+                return -ENOMEM;
 
         fprintf(f, "Considered %d cgroups for killing, top candidates were:\n", n);
         for (int i = 0; i < dump_until; i++)
                 dump_func(sorted[i], f, "\t");
 
-        r = fflush_and_check(f);
-        if (r < 0)
-                return r;
-
-        return log_dump(LOG_INFO, dump);
+        return memstream_dump(LOG_INFO, &m);
 }
 
 int oomd_kill_by_pgscan_rate(Hashmap *h, const char *prefix, bool dry_run, char **ret_selected) {
@@ -321,7 +317,7 @@ int oomd_kill_by_pgscan_rate(Hashmap *h, const char *prefix, bool dry_run, char 
                 if (sorted[i]->pgscan == 0 && sorted[i]->current_memory_usage == 0)
                         continue;
 
-                r = oomd_cgroup_kill(sorted[i]->path, true, dry_run);
+                r = oomd_cgroup_kill(sorted[i]->path, /* recurse= */ true, /* dry_run= */ dry_run);
                 if (r == -ENOMEM)
                         return r; /* Treat oom as a hard error */
                 if (r < 0) {
@@ -365,7 +361,7 @@ int oomd_kill_by_swap_usage(Hashmap *h, uint64_t threshold_usage, bool dry_run, 
                 if (sorted[i]->swap_usage <= threshold_usage)
                         continue;
 
-                r = oomd_cgroup_kill(sorted[i]->path, true, dry_run);
+                r = oomd_cgroup_kill(sorted[i]->path, /* recurse= */ true, /* dry_run= */ dry_run);
                 if (r == -ENOMEM)
                         return r; /* Treat oom as a hard error */
                 if (r < 0) {

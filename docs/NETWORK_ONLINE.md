@@ -45,7 +45,7 @@ themselves. Services using the network should hence simply place an
 `After=network.target` stanza in their unit files, without
 `Wants=network.target` or `Requires=network.target`.
 
-## Network connectivity has been estabilished: `network-online.target`
+## Network connectivity has been established: `network-online.target`
 
 `network-online.target` is a target that actively waits until the network is
 "up", where the definition of "up" is defined by the network management
@@ -152,7 +152,7 @@ For details, see the next question.
 
 ## What does "up" actually mean?
 
-The services that are ordered before `network-online.target` define it's
+The services that are ordered before `network-online.target` define its
 meaning. *Usually* means that all configured network devices are up and have an
 IP address assigned, but details may vary. In particular, configuration may
 affect which interfaces are taken into account.

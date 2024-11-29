@@ -64,7 +64,7 @@ static int keymap_recurse_dir_callback(
 }
 
 int get_keymaps(char ***ret) {
-        _cleanup_(set_free_freep) Set *keymaps = NULL;
+        _cleanup_set_free_free_ Set *keymaps = NULL;
         int r;
 
         keymaps = set_new(&string_hash_ops);
@@ -145,11 +145,11 @@ int keymap_exists(const char *name) {
                                 &(struct recurse_dir_userdata) {
                                         .keymap_name = name,
                                 });
-                if (r == -ENOENT)
-                        continue;
-                if (ERRNO_IS_RESOURCE(r))
-                        return r;
                 if (r < 0) {
+                        if (r == -ENOENT)
+                                continue;
+                        if (ERRNO_IS_RESOURCE(r))
+                                return r;
                         log_debug_errno(r, "Failed to read keymap list from %s, ignoring: %m", dir);
                         continue;
                 }

@@ -8,7 +8,7 @@
 #include "blkid-util.h"
 #include "blockdev-util.h"
 #include "build.h"
-#include "chase-symlinks.h"
+#include "chase.h"
 #include "efi-loader.h"
 #include "efivars.h"
 #include "escape.h"
@@ -35,7 +35,7 @@ static int help(int argc, char *argv[], void *userdata) {
         _cleanup_free_ char *link = NULL;
         int r;
 
-        r = terminal_urlify_man("systemd-pcrphase", "1", &link);
+        r = terminal_urlify_man("systemd-pcrphase", "8", &link);
         if (r < 0)
                 return log_oom();
 
@@ -259,7 +259,7 @@ static int run(int argc, char *argv[]) {
                 if (optind != argc)
                         return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Expected no argument.");
 
-                dfd = chase_symlinks_and_open(arg_file_system, NULL, 0, O_DIRECTORY|O_CLOEXEC, &normalized);
+                dfd = chase_and_open(arg_file_system, NULL, 0, O_DIRECTORY|O_CLOEXEC, &normalized);
                 if (dfd < 0)
                         return log_error_errno(dfd, "Failed to open path '%s': %m", arg_file_system);
 
@@ -341,11 +341,7 @@ static int run(int argc, char *argv[]) {
                 return EXIT_SUCCESS;
         }
 
-        r = dlopen_tpm2();
-        if (r < 0)
-                return log_error_errno(r, "Failed to load TPM2 libraries: %m");
-
-        _cleanup_tpm2_context_ Tpm2Context *c = NULL;
+        _cleanup_(tpm2_context_unrefp) Tpm2Context *c = NULL;
         r = tpm2_context_new(arg_tpm2_device, &c);
         if (r < 0)
                 return r;

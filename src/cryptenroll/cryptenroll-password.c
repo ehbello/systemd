@@ -3,9 +3,10 @@
 #include "ask-password-api.h"
 #include "cryptenroll-password.h"
 #include "env-util.h"
+#include "errno-util.h"
 #include "escape.h"
 #include "memory-util.h"
-#include "pwquality-util.h"
+#include "password-quality-util.h"
 #include "strv.h"
 
 int load_volume_key_password(
@@ -34,7 +35,7 @@ int load_volume_key_password(
                                 envpw,
                                 strlen(envpw));
                 if (r < 0)
-                        return log_error_errno(r, "Password from environment variable $PASSWORD did not work.");
+                        return log_error_errno(r, "Password from environment variable $PASSWORD did not work: %m");
         } else {
                 AskPasswordFlags ask_password_flags = ASK_PASSWORD_PUSH_CACHE|ASK_PASSWORD_ACCEPT_CACHED;
                 _cleanup_free_ char *question = NULL, *disk_path = NULL;
@@ -56,7 +57,7 @@ int load_volume_key_password(
 
                         if (--i == 0)
                                 return log_error_errno(SYNTHETIC_ERRNO(ENOKEY),
-                                                       "Too many attempts, giving up:");
+                                                       "Too many attempts, giving up.");
 
                         r = ask_password_auto(
                                         question, "drive-harddisk", id, "cryptenroll", "cryptenroll.passphrase", USEC_INFINITY,
@@ -80,7 +81,7 @@ int load_volume_key_password(
                         if (r >= 0)
                                 break;
 
-                        log_error_errno(r, "Password not correct, please try again.");
+                        log_error_errno(r, "Password not correct, please try again: %m");
                         ask_password_flags &= ~ASK_PASSWORD_ACCEPT_CACHED;
                 }
         }
@@ -124,7 +125,7 @@ int enroll_password(
 
                         if (--i == 0)
                                 return log_error_errno(SYNTHETIC_ERRNO(ENOKEY),
-                                                       "Too many attempts, giving up:");
+                                                       "Too many attempts, giving up.");
 
                         question = strjoin("Please enter new passphrase for disk ", node, ":");
                         if (!question)
@@ -157,11 +158,15 @@ int enroll_password(
                 }
         }
 
-        r = quality_check_password(new_password, NULL, &error);
-        if (r < 0)
-                return log_error_errno(r, "Failed to check password for quality: %m");
+        r = check_password_quality(new_password, /* old */ NULL, /* user */ NULL, &error);
+        if (r < 0) {
+                if (ERRNO_IS_NOT_SUPPORTED(r))
+                        log_warning("Password quality check is not supported, proceeding anyway.");
+                else
+                        return log_error_errno(r, "Failed to check password quality: %m");
+        }
         if (r == 0)
-                log_warning_errno(r, "Specified password does not pass quality checks (%s), proceeding anyway.", error);
+                log_warning("Specified password does not pass quality checks (%s), proceeding anyway.", error);
 
         keyslot = crypt_keyslot_add_by_volume_key(
                         cd,

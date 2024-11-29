@@ -119,6 +119,15 @@ grep -q "^root:x:0:0:.*:/bin/barshell$" "$ROOT/etc/passwd"
 grep -q "^root:$ROOT_HASHED_PASSWORD2:" "$ROOT/etc/shadow"
 grep -q "hello.world=0" "$ROOT/etc/kernel/cmdline"
 
+# Test that --reset removes all files configured by firstboot.
+systemd-firstboot --root="$ROOT" --reset
+[[ ! -e "$ROOT/etc/locale.conf" ]]
+[[ ! -e "$ROOT/etc/vconsole.conf" ]]
+[[ ! -e "$ROOT/etc/localtime" ]]
+[[ ! -e "$ROOT/etc/hostname" ]]
+[[ ! -e "$ROOT/etc/machine-id" ]]
+[[ ! -e "$ROOT/etc/kernel/cmdline" ]]
+
 # --copy-* options
 rm -fr "$ROOT"
 mkdir "$ROOT"
@@ -143,6 +152,8 @@ diff <(awk -F: '/^root/ { print $2; }' /etc/shadow) <(awk -F: '/^root/ { print $
 rm -fr "$ROOT"
 mkdir -p "$ROOT/bin"
 touch "$ROOT/bin/fooshell" "$ROOT/bin/barshell"
+# Temporarily disable pipefail to avoid `echo: write error: Broken pipe
+set +o pipefail
 # We can do only limited testing here, since it's all an interactive stuff,
 # so --prompt and --prompt-root-password are skipped on purpose
 echo -ne "\nfoo\nbar\n" | systemd-firstboot --root="$ROOT" --prompt-locale
@@ -168,6 +179,8 @@ grep -q "^root:.*:0:0:.*:/bin/fooshell$" "$ROOT/etc/passwd"
 # Now without the welcome screen but with force
 echo -ne "/bin/barshell\n" | systemd-firstboot --root="$ROOT" --force --prompt-root-shell --welcome=no
 grep -q "^root:.*:0:0:.*:/bin/barshell$" "$ROOT/etc/passwd"
+# Re-enable pipefail
+set -o pipefail
 
 # Assorted tests
 rm -fr "$ROOT"
