@@ -12,6 +12,7 @@
  *
  * Copyright (C) 2012-2015 Kay Sievers <kay@vrfy.org>
  * Copyright (C) 2012-2015 Harald Hoyer <harald@redhat.com>
+ * Copyright (C) 2017 kitsunyan <kitsunyan@inbox.ru>
  */
 
 #include <efi.h>
@@ -25,6 +26,7 @@
 #include "pe.h"
 #include "shim.h"
 #include "util.h"
+#include "sha512.h"
 
 #ifndef EFI_OS_INDICATIONS_BOOT_TO_FW_UI
 #define EFI_OS_INDICATIONS_BOOT_TO_FW_UI 0x0000000000000001ULL
@@ -68,6 +70,7 @@ typedef struct {
         CHAR16 *entry_default_pattern;
         CHAR16 *entry_oneshot;
         CHAR16 *options_edit;
+        UINT8 *hash;
         BOOLEAN no_editor;
 } Config;
 
@@ -327,6 +330,67 @@ static BOOLEAN line_edit(CHAR16 *line_in, CHAR16 **line_out, UINTN x_max, UINTN 
         return enter;
 }
 
+static BOOLEAN password_read(CHAR8 **line_out) {
+        CHAR8 *line;
+        UINTN size;
+        UINTN len;
+        BOOLEAN exit;
+        BOOLEAN enter;
+
+        size = 64;
+        line = AllocatePool(size * sizeof(CHAR16));
+        len = 0;
+
+        uefi_call_wrapper(ST->ConOut->EnableCursor, 2, ST->ConOut, TRUE);
+
+        enter = FALSE;
+        exit = FALSE;
+        while (!exit) {
+                EFI_STATUS err;
+                UINT64 key;
+
+                err = console_key_read(&key, TRUE);
+                if (EFI_ERROR(err))
+                        continue;
+
+                switch (key) {
+                case KEYPRESS(0, SCAN_ESC, 0):
+                case KEYPRESS(EFI_CONTROL_PRESSED, 0, 'c'):
+                case KEYPRESS(EFI_CONTROL_PRESSED, 0, 'g'):
+                case KEYPRESS(EFI_CONTROL_PRESSED, 0, CHAR_CTRL('c')):
+                case KEYPRESS(EFI_CONTROL_PRESSED, 0, CHAR_CTRL('g')):
+                        exit = TRUE;
+                        break;
+
+                case KEYPRESS(0, 0, CHAR_LINEFEED):
+                case KEYPRESS(0, 0, CHAR_CARRIAGE_RETURN):
+                        *line_out = line;
+                        line[len] = '\0';
+                        enter = TRUE;
+                        exit = TRUE;
+                        break;
+
+                case KEYPRESS(0, 0, CHAR_BACKSPACE):
+                        if (len > 0)
+                                len--;
+                        continue;
+
+                case KEYPRESS(0, 0, ' ') ... KEYPRESS(0, 0, '~'):
+                case KEYPRESS(0, 0, 0x80) ... KEYPRESS(0, 0, 0xffff):
+                        if (len+1 == size)
+                                continue;
+                        line[len] = key;
+                        len++;
+                        continue;
+                }
+        }
+
+        uefi_call_wrapper(ST->ConOut->EnableCursor, 2, ST->ConOut, FALSE);
+        if (!enter)
+                FreePool(line);
+        return enter;
+}
+
 static UINTN entry_lookup_key(Config *config, UINTN start, CHAR16 key) {
         UINTN i;
 
@@ -401,6 +465,7 @@ static VOID print_status(Config *config, CHAR16 *loaded_image_path) {
         if (config->entry_default_pattern)
                 Print(L"default pattern:        '%s'\n", config->entry_default_pattern);
         Print(L"editor:                 %s\n", yes_no(!config->no_editor));
+        Print(L"password:               %s\n", yes_no(config->hash != NULL));
         Print(L"\n");
 
         Print(L"config entry count:     %d\n", config->entry_count);
@@ -486,11 +551,14 @@ static BOOLEAN menu_run(Config *config, ConfigEntry **chosen_entry, CHAR16 *load
         UINTN y_max;
         CHAR16 *status;
         CHAR16 *clearline;
+        CHAR8 *password;
+        UINT8 *hash;
         INTN timeout_remain;
         INT16 idx;
         BOOLEAN exit = FALSE;
         BOOLEAN run = TRUE;
         BOOLEAN wait = FALSE;
+        BOOLEAN allow_editor = FALSE;
 
         graphics_mode(FALSE);
         uefi_call_wrapper(ST->ConIn->Reset, 2, ST->ConIn, FALSE);
@@ -569,6 +637,9 @@ static BOOLEAN menu_run(Config *config, ConfigEntry **chosen_entry, CHAR16 *load
         for (i = 0; i < x_max; i++)
                 clearline[i] = ' ';
         clearline[i] = 0;
+
+        password = NULL;
+        hash = NULL;
 
         while (!exit) {
                 UINT64 key;
@@ -777,10 +848,32 @@ static BOOLEAN menu_run(Config *config, ConfigEntry **chosen_entry, CHAR16 *load
                         if (config->no_editor || config->entries[idx_highlight]->type == LOADER_UNDEFINED)
                                 break;
                         uefi_call_wrapper(ST->ConOut->SetAttribute, 2, ST->ConOut, EFI_LIGHTGRAY|EFI_BACKGROUND_BLACK);
-                        uefi_call_wrapper(ST->ConOut->SetCursorPosition, 3, ST->ConOut, 0, y_max-1);
-                        uefi_call_wrapper(ST->ConOut->OutputString, 2, ST->ConOut, clearline+1);
-                        if (line_edit(config->entries[idx_highlight]->options, &config->options_edit, x_max-1, y_max-1))
-                                exit = TRUE;
+                        allow_editor = config->hash == NULL;
+                        if (!allow_editor) {
+                                uefi_call_wrapper(ST->ConOut->SetCursorPosition, 3, ST->ConOut, 0, y_max-1);
+                                uefi_call_wrapper(ST->ConOut->OutputString, 2, ST->ConOut, clearline+1);
+                                uefi_call_wrapper(ST->ConOut->SetCursorPosition, 3, ST->ConOut, 0, y_max-1);
+                                uefi_call_wrapper(ST->ConOut->OutputString, 2, ST->ConOut, L"Enter password: ");
+                                if (password_read(&password)) {
+                                        UINTN len = strlena(password);
+                                        hash = AllocatePool(64);
+                                        sha512_compute(password, len, hash);
+                                        for (i = 0; i < 64; i++)
+                                                if (hash[i] != config->hash[i])
+                                                        break;
+                                        allow_editor = i == 64;
+                                        FreePool(password);
+                                        FreePool(hash);
+                                        if (!allow_editor)
+                                                status = StrDuplicate(L"Invalid password.");
+                                }
+                        }
+                        if (allow_editor) {
+                                uefi_call_wrapper(ST->ConOut->SetCursorPosition, 3, ST->ConOut, 0, y_max-1);
+                                uefi_call_wrapper(ST->ConOut->OutputString, 2, ST->ConOut, clearline+1);
+                                if (line_edit(config->entries[idx_highlight]->options, &config->options_edit, x_max-1, y_max-1))
+                                        exit = TRUE;
+                        }
                         uefi_call_wrapper(ST->ConOut->SetCursorPosition, 3, ST->ConOut, 0, y_max-1);
                         uefi_call_wrapper(ST->ConOut->OutputString, 2, ST->ConOut, clearline+1);
                         break;
@@ -936,7 +1029,7 @@ skip:
 
         /* empty line */
         if (linelen == 0)
-                goto skip;
+                return NULL;
 
         /* terminate line */
         line[linelen] = '\0';
@@ -977,7 +1070,7 @@ skip:
         return line;
 }
 
-static VOID config_defaults_load_from_file(Config *config, CHAR8 *content) {
+static UINTN config_defaults_load_from_file(Config *config, CHAR8 *content) {
         CHAR8 *line;
         UINTN pos = 0;
         CHAR8 *key, *value;
@@ -1008,10 +1101,20 @@ static VOID config_defaults_load_from_file(Config *config, CHAR8 *content) {
                                 continue;
                         config->no_editor = !on;
                 }
+
+                if (strcmpa((CHAR8 *)"password", key) == 0) {
+                        UINT8 *hash = hash_str_to_array(value);
+                        if (hash) {
+                                FreePool(config->hash);
+                                config->hash = hash;
+                        }
+                }
         }
+
+        return pos;
 }
 
-static VOID config_entry_add_from_file(Config *config, EFI_HANDLE *device, CHAR16 *file, CHAR8 *content, CHAR16 *loaded_image_path) {
+static UINTN config_entry_add_from_file(Config *config, EFI_HANDLE *device, CHAR16 *file, CHAR8 *content, CHAR16 *loaded_image_path) {
         ConfigEntry *entry;
         CHAR8 *line;
         UINTN pos = 0;
@@ -1110,7 +1213,7 @@ static VOID config_entry_add_from_file(Config *config, EFI_HANDLE *device, CHAR1
                 config_entry_free(entry);
                 FreePool(initrd);
                 FreePool(entry);
-                return;
+                return pos;
         }
 
         /* add initrd= to options */
@@ -1137,17 +1240,42 @@ static VOID config_entry_add_from_file(Config *config, EFI_HANDLE *device, CHAR1
         StrLwr(entry->file);
 
         config_add_entry(config, entry);
+
+        return pos;
 }
 
-static VOID config_load_defaults(Config *config, EFI_FILE *root_dir) {
+static VOID config_load_defaults(Config *config, EFI_HANDLE *device, EFI_FILE *root_dir, CHAR16 *loaded_image_path, VOID *image_base) {
         CHAR8 *content = NULL;
         UINTN sec;
-        UINTN len;
+        UINTN len = 0;
+        UINTN pos = 0;
         EFI_STATUS err;
+        CHAR8 *sections[] = {
+                (CHAR8 *)".config",
+                NULL
+        };
+        UINTN addr;
 
-        len = file_read(root_dir, L"\\loader\\loader.conf", 0, 0, &content);
-        if (len > 0)
-                config_defaults_load_from_file(config, content);
+        err = pe_memory_locate_sections(image_base, sections, &addr, NULL, &len);
+        if (!EFI_ERROR(err) && len > 0) {
+                content = AllocatePool(len + 1);
+                CopyMem(content, image_base + addr, len);
+                content[len] = '\0';
+        } else {
+                len = file_read(root_dir, L"\\loader\\loader.conf", 0, 0, &content);
+        }
+        if (len > 0) {
+                UINTN end = config_defaults_load_from_file(config, content);
+                UINTN index = 0;
+                pos += end;
+                while (len > pos) {
+                        CHAR16 *file_name = PoolPrint(L"entry%d.conf", index++);
+                        end = config_entry_add_from_file(config, device, file_name,
+                                content + pos, loaded_image_path);
+                        pos += end;
+                        FreePool(file_name);
+                }
+        }
         FreePool(content);
 
         err = efivar_get_int(L"LoaderConfigTimeout", &sec);
@@ -1501,7 +1629,9 @@ static VOID config_entry_add_linux( Config *config, EFI_LOADED_IMAGE *loaded_ima
                         UINTN pos = 0;
                         CHAR8 *key, *value;
                         CHAR16 *os_name = NULL;
+                        CHAR16 *os_pretty_name = NULL;
                         CHAR16 *os_id = NULL;
+                        CHAR16 *os_id_like = NULL;
                         CHAR16 *os_version = NULL;
                         CHAR16 *os_build = NULL;
 
@@ -1533,15 +1663,27 @@ static VOID config_entry_add_linux( Config *config, EFI_LOADED_IMAGE *loaded_ima
                         /* read properties from the embedded os-release file */
                         line = content;
                         while ((line = line_get_key_value(content, (CHAR8 *)"=", &pos, &key, &value))) {
-                                if (strcmpa((CHAR8 *)"PRETTY_NAME", key) == 0) {
+                                if (strcmpa((CHAR8 *)"NAME", key) == 0) {
                                         FreePool(os_name);
                                         os_name = stra_to_str(value);
+                                        continue;
+                                }
+
+                                if (strcmpa((CHAR8 *)"PRETTY_NAME", key) == 0) {
+                                        FreePool(os_pretty_name);
+                                        os_pretty_name = stra_to_str(value);
                                         continue;
                                 }
 
                                 if (strcmpa((CHAR8 *)"ID", key) == 0) {
                                         FreePool(os_id);
                                         os_id = stra_to_str(value);
+                                        continue;
+                                }
+
+                                if (strcmpa((CHAR8 *)"ID_LIKE", key) == 0) {
+                                        FreePool(os_id_like);
+                                        os_id_like = stra_to_str(value);
                                         continue;
                                 }
 
@@ -1558,14 +1700,18 @@ static VOID config_entry_add_linux( Config *config, EFI_LOADED_IMAGE *loaded_ima
                                 }
                         }
 
-                        if (os_name && os_id && (os_version || os_build)) {
-                                CHAR16 *conf;
+                        if ((os_name || os_pretty_name) && (os_id || os_id_like)) {
+                                CHAR16 *file;
                                 CHAR16 *path;
                                 CHAR16 *cmdline;
 
-                                conf = PoolPrint(L"%s-%s", os_id, os_version ? : os_build);
+                                if (os_version || os_build)
+                                        file = PoolPrint(L"%s-%s", os_id ? os_id : os_id_like, os_version ? : os_build);
+                                else
+                                        file = PoolPrint(L"%s", os_id ? os_id : os_id_like);
                                 path = PoolPrint(L"\\EFI\\Linux\\%s", f->FileName);
-                                entry = config_entry_add_loader(config, loaded_image->DeviceHandle, LOADER_LINUX, conf, 'l', os_name, path);
+                                entry = config_entry_add_loader(config, loaded_image->DeviceHandle, LOADER_LINUX,
+                                        file, 'l', os_pretty_name ? os_pretty_name : os_name, path);
 
                                 FreePool(content);
                                 /* read the embedded cmdline file */
@@ -1576,12 +1722,14 @@ static VOID config_entry_add_linux( Config *config, EFI_LOADED_IMAGE *loaded_ima
                                         cmdline = NULL;
                                 }
                                 FreePool(cmdline);
-                                FreePool(conf);
+                                FreePool(file);
                                 FreePool(path);
                         }
 
                         FreePool(os_name);
+                        FreePool(os_pretty_name);
                         FreePool(os_id);
+                        FreePool(os_id_like);
                         FreePool(os_version);
                         FreePool(os_build);
                         FreePool(content);
@@ -1681,6 +1829,7 @@ static VOID config_free(Config *config) {
         FreePool(config->entries);
         FreePool(config->entry_default_pattern);
         FreePool(config->options_edit);
+        FreePool(config->hash);
         FreePool(config->entry_oneshot);
 }
 
@@ -1741,7 +1890,7 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *sys_table) {
         efivar_set(L"LoaderImageIdentifier", loaded_image_path, FALSE);
 
         ZeroMem(&config, sizeof(Config));
-        config_load_defaults(&config, root_dir);
+        config_load_defaults(&config, loaded_image->DeviceHandle, root_dir, loaded_image_path, loaded_image->ImageBase);
 
         /* scan /EFI/Linux/ directory */
         config_entry_add_linux(&config, loaded_image, root_dir);

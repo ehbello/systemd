@@ -12,6 +12,7 @@
  *
  * Copyright (C) 2012-2013 Kay Sievers <kay@vrfy.org>
  * Copyright (C) 2012 Harald Hoyer <harald@redhat.com>
+ * Copyright (C) 2017 kitsunyan <kitsunyan@inbox.ru>
  */
 
 #ifndef __SDBOOT_UTIL_H
@@ -46,4 +47,6 @@ CHAR16 *stra_to_path(CHAR8 *stra);
 CHAR16 *stra_to_str(CHAR8 *stra);
 
 INTN file_read(EFI_FILE_HANDLE dir, CHAR16 *name, UINTN off, UINTN size, CHAR8 **content);
+
+UINT8 *hash_str_to_array(CHAR8 *value);
 #endif

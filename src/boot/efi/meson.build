@@ -24,6 +24,7 @@ efi_headers = files('''
         pe.h
         splash.h
         util.h
+        sha512.h
         shim.h
 '''.split())
 
@@ -38,6 +39,7 @@ common_sources = '''
 systemd_boot_sources = '''
         boot.c
         console.c
+        sha512.c
         shim.c
 '''.split()
 

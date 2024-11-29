@@ -12,6 +12,7 @@
  *
  * Copyright (C) 2012-2013 Kay Sievers <kay@vrfy.org>
  * Copyright (C) 2012 Harald Hoyer <harald@redhat.com>
+ * Copyright (C) 2017 kitsunyan <kitsunyan@inbox.ru>
  */
 
 #include <efi.h>
@@ -343,4 +344,45 @@ INTN file_read(EFI_FILE_HANDLE dir, CHAR16 *name, UINTN off, UINTN size, CHAR8 *
 
         uefi_call_wrapper(handle->Close, 1, handle);
         return len;
+}
+
+UINT8 *hash_str_to_array(CHAR8 *value) {
+        UINTN i;
+        UINT8 b;
+        UINTN len = strlena(value);
+        UINT8 *hash = NULL;
+        BOOLEAN invalid = len != 64*2;
+
+        if (!invalid) {
+                hash = AllocatePool(64);
+                for (i = 0; i < 64*2; i++) {
+                        switch (value[i]) {
+                        case '0' ... '9':
+                                b = value[i] - '0';
+                                break;
+                        case 'a' ... 'f':
+                                b = value[i] - 'a' + 10;
+                                break;
+                        case 'A' ... 'F':
+                                b = value[i] - 'A' + 10;
+                                break;
+                        default:
+                                invalid = TRUE;
+                                break;
+                        }
+
+                        if (!invalid) {
+                                if (i % 2)
+                                        hash[i/2] |= b;
+                                else
+                                        hash[i/2] = b << 4;
+                        } else
+                                break;
+                }
+        }
+        if (invalid) {
+                FreePool(hash);
+                hash = NULL;
+        }
+        return hash;
 }
