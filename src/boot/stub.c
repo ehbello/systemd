@@ -1133,7 +1133,7 @@ static void settle_command_line(
          * a cmdline baked into the UKI or we are in confidential VM mode. */
 
         if (!isempty(*cmdline)) {
-                if (secure_boot_enabled() && SECURE_BOOT_PASSWORD && (PE_SECTION_VECTOR_IS_SET(sections + UNIFIED_SECTION_CMDLINE) || is_confidential_vm()))
+                if (secure_boot_enabled() && ENABLE_PASSWORD && (PE_SECTION_VECTOR_IS_SET(sections + UNIFIED_SECTION_CMDLINE) || is_confidential_vm()))
                         /* Drop the custom cmdline */
                         *cmdline = mfree(*cmdline);
                 else {
