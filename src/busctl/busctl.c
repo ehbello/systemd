@@ -1308,7 +1308,10 @@ static int monitor(int argc, char **argv, int (*dump)(sd_bus_message *m, FILE *f
         if (r < 0)
                 return log_error_errno(r, "Failed to get unique name: %m");
 
-        log_info("Monitoring bus message stream.");
+        if (!arg_quiet && arg_json_format_flags == JSON_FORMAT_OFF)
+                log_info("Monitoring bus message stream.");
+
+        (void) sd_notify(/* unset_environment=false */ false, "READY=1");
 
         for (;;) {
                 _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
@@ -1339,7 +1342,8 @@ static int monitor(int argc, char **argv, int (*dump)(sd_bus_message *m, FILE *f
                         fflush(stdout);
 
                         if (sd_bus_message_is_signal(m, "org.freedesktop.DBus.Local", "Disconnected") > 0) {
-                                log_info("Connection terminated, exiting.");
+                                if (!arg_quiet && arg_json_format_flags == JSON_FORMAT_OFF)
+                                        log_info("Connection terminated, exiting.");
                                 return 0;
                         }
 
@@ -1627,8 +1631,11 @@ static int message_append_cmdline(sd_bus_message *m, const char *signature, char
                         p--;
 
                         r = signature_element_length(signature, &k);
-                        if (r < 0)
+                        if (r < 0 || k < 2) {
+                                if (r >= 0 && k < 2)
+                                        r = -ERANGE;
                                 return log_error_errno(r, "Invalid struct/dict entry signature: %m");
+                        }
 
                         {
                                 char s[k-1];
@@ -1732,11 +1739,14 @@ static int json_transform_variant(sd_bus_message *m, const char *contents, JsonV
 }
 
 static int json_transform_dict_array(sd_bus_message *m, JsonVariant **ret) {
-        _cleanup_(json_variant_unrefp) JsonVariant *array = NULL;
+        JsonVariant **elements = NULL;
+        size_t n_elements = 0;
         int r;
 
         assert(m);
         assert(ret);
+
+        CLEANUP_ARRAY(elements, n_elements, json_variant_unref_many);
 
         for (;;) {
                 const char *contents;
@@ -1754,28 +1764,31 @@ static int json_transform_dict_array(sd_bus_message *m, JsonVariant **ret) {
 
                 assert(type == 'e');
 
+                if (!GREEDY_REALLOC(elements, n_elements + 2))
+                        return log_oom();
+
                 r = sd_bus_message_enter_container(m, type, contents);
                 if (r < 0)
                         return bus_log_parse_error(r);
 
-                r = json_transform_and_append(m, &array);
+                r = json_transform_one(m, elements + n_elements);
                 if (r < 0)
                         return r;
 
-                r = json_transform_and_append(m, &array);
+                n_elements++;
+
+                r = json_transform_one(m, elements + n_elements);
                 if (r < 0)
                         return r;
+
+                n_elements++;
 
                 r = sd_bus_message_exit_container(m);
                 if (r < 0)
                         return bus_log_parse_error(r);
         }
 
-        if (!array)
-                return json_variant_new_array(ret, NULL, 0);
-
-        *ret = TAKE_PTR(array);
-        return 0;
+        return json_variant_new_object(ret, elements, n_elements);
 }
 
 static int json_transform_one(sd_bus_message *m, JsonVariant **ret) {

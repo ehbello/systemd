@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <utmp.h>
@@ -588,7 +589,6 @@ int getgroups_alloc(gid_t** gids) {
 int get_home_dir(char **ret) {
         struct passwd *p;
         const char *e;
-        char *h;
         uid_t u;
 
         assert(ret);
@@ -621,18 +621,12 @@ int get_home_dir(char **ret) {
                 return -EINVAL;
 
  found:
-        h = strdup(e);
-        if (!h)
-                return -ENOMEM;
-
-        *ret = path_simplify(h);
-        return 0;
+        return path_simplify_alloc(e, ret);
 }
 
 int get_shell(char **ret) {
         struct passwd *p;
         const char *e;
-        char *s;
         uid_t u;
 
         assert(ret);
@@ -664,12 +658,7 @@ int get_shell(char **ret) {
                 return -EINVAL;
 
  found:
-        s = strdup(e);
-        if (!s)
-                return -ENOMEM;
-
-        *ret = path_simplify(s);
-        return 0;
+        return path_simplify_alloc(e, ret);
 }
 
 int reset_uid_gid(void) {

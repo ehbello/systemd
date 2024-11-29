@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "sd-daemon.h"
+#include "sd-messages.h"
 
 #include "alloc-util.h"
 #include "async.h"
@@ -167,7 +168,8 @@ static int switch_root_initramfs(void) {
          *
          * Disable sync() during switch-root, we after all sync'ed here plenty, and a dumb sync (as opposed
          * to the "smart" sync() we did here that looks at progress parameters) would defeat much of our
-         * efforts here. */
+         * efforts here. As the new root will be /run/initramfs/, it is not necessary to mount /run/
+         * recursively. */
         return switch_root(
                         /* new_root= */ "/run/initramfs",
                         /* old_root_after= */ "/oldroot",
@@ -651,6 +653,8 @@ int main(int argc, char *argv[]) {
         r = log_error_errno(errno, "Failed to invoke reboot(): %m");
 
   error:
-        log_emergency_errno(r, "Critical error while doing system shutdown: %m");
+        log_struct_errno(LOG_EMERG, r,
+                         LOG_MESSAGE("Critical error while doing system shutdown: %m"),
+                         "MESSAGE_ID=" SD_MESSAGE_SHUTDOWN_ERROR_STR);
         freeze();
 }

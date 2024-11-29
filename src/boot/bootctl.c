@@ -132,6 +132,8 @@ static int help(int argc, char *argv[], void *userdata) {
         _cleanup_free_ char *link = NULL;
         int r;
 
+        pager_open(arg_pager_flags);
+
         r = terminal_urlify_man("bootctl", "1", &link);
         if (r < 0)
                 return log_oom();
@@ -142,8 +144,6 @@ static int help(int argc, char *argv[], void *userdata) {
                "  status               Show status of installed boot loader and EFI variables\n"
                "  reboot-to-firmware [BOOL]\n"
                "                       Query or set reboot-to-firmware EFI flag\n"
-               "  systemd-efi-options [STRING]\n"
-               "                       Query or set system options string in EFI variable\n"
                "\n%3$sBoot Loader Specification Commands:%4$s\n"
                "  list                 List boot loader entries\n"
                "  unlink ID            Remove boot loader entry\n"
@@ -262,7 +262,7 @@ static int parse_argv(int argc, char *argv[]) {
         assert(argc >= 0);
         assert(argv);
 
-        while ((c = getopt_long(argc, argv, "hpxR", options, NULL)) >= 0)
+        while ((c = getopt_long(argc, argv, "hpxRq", options, NULL)) >= 0)
                 switch (c) {
 
                 case 'h':

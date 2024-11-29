@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/sendfile.h>
 #include <sys/xattr.h>
@@ -274,9 +275,22 @@ int copy_bytes_full(
                         /* If we're in a hole (current offset is not a data offset), create a hole of the
                          * same size in the target file. */
                         if (e > c) {
-                                r = create_hole(fdt, e - c);
+                                /* Make sure our new hole doesn't go over the maximum size we're allowed to copy. */
+                                n = MIN(max_bytes, (uint64_t) e - c);
+                                r = create_hole(fdt, n);
                                 if (r < 0)
                                         return r;
+
+                                /* Make sure holes are taken into account in the maximum size we're supposed to copy. */
+                                if (max_bytes != UINT64_MAX) {
+                                        max_bytes -= n;
+                                        if (max_bytes <= 0)
+                                                break;
+                                }
+
+                                /* Update the size we're supposed to copy in this iteration if needed. */
+                                if (m > max_bytes)
+                                        m = max_bytes;
                         }
 
                         c = e; /* Set c to the start of the data segment. */
@@ -624,6 +638,10 @@ static void hardlink_context_destroy(HardlinkContext *c) {
          * _cleanup_() so that we really delete this, even on failure. */
 
         if (c->dir_fd >= 0) {
+                /* <dir_fd> might be have already been used for reading, so we need to rewind it. */
+                if (lseek(c->dir_fd, 0, SEEK_SET) < 0)
+                        log_debug_errno(errno, "Failed to lseek on file descriptor, ignoring: %m");
+
                 r = rm_rf_children(TAKE_FD(c->dir_fd), REMOVE_PHYSICAL, NULL); /* consumes dir_fd in all cases, even on failure */
                 if (r < 0)
                         log_debug_errno(r, "Failed to remove hardlink store (%s) contents, ignoring: %m", c->subdir);
@@ -716,6 +734,7 @@ static int fd_copy_tree_generic(
                 gid_t override_gid,
                 CopyFlags copy_flags,
                 Hashmap *denylist,
+                Set *subvolumes,
                 HardlinkContext *hardlink_context,
                 const char *display_path,
                 copy_progress_path_t progress_path,
@@ -829,14 +848,11 @@ static int fd_copy_fifo(
         r = RET_NERRNO(mkfifoat(dt, to, st->st_mode & 07777));
         if (copy_flags & COPY_MAC_CREATE)
                 mac_selinux_create_file_clear();
-        if (r < 0) {
-                if (FLAGS_SET(copy_flags, COPY_GRACEFUL_WARN) && (ERRNO_IS_PRIVILEGE(r) || ERRNO_IS_NOT_SUPPORTED(r))) {
-                        log_notice_errno(r, "Failed to copy fifo '%s', ignoring: %m", from);
-                        return 0;
-                }
-
+        if (FLAGS_SET(copy_flags, COPY_GRACEFUL_WARN) && (ERRNO_IS_NEG_PRIVILEGE(r) || ERRNO_IS_NEG_NOT_SUPPORTED(r))) {
+                log_notice_errno(r, "Failed to copy fifo '%s', ignoring: %m", from);
+                return 0;
+        } else if (r < 0)
                 return r;
-        }
 
         if (fchownat(dt, to,
                      uid_is_valid(override_uid) ? override_uid : st->st_uid,
@@ -883,14 +899,11 @@ static int fd_copy_node(
         r = RET_NERRNO(mknodat(dt, to, st->st_mode, st->st_rdev));
         if (copy_flags & COPY_MAC_CREATE)
                 mac_selinux_create_file_clear();
-        if (r < 0) {
-                if (FLAGS_SET(copy_flags, COPY_GRACEFUL_WARN) && (ERRNO_IS_PRIVILEGE(r) || ERRNO_IS_NOT_SUPPORTED(r))) {
-                        log_notice_errno(r, "Failed to copy node '%s', ignoring: %m", from);
-                        return 0;
-                }
-
+        if (FLAGS_SET(copy_flags, COPY_GRACEFUL_WARN) && (ERRNO_IS_NEG_PRIVILEGE(r) || ERRNO_IS_NEG_NOT_SUPPORTED(r))) {
+                log_notice_errno(r, "Failed to copy node '%s', ignoring: %m", from);
+                return 0;
+        } else if (r < 0)
                 return r;
-        }
 
         if (fchownat(dt, to,
                      uid_is_valid(override_uid) ? override_uid : st->st_uid,
@@ -919,6 +932,7 @@ static int fd_copy_directory(
                 gid_t override_gid,
                 CopyFlags copy_flags,
                 Hashmap *denylist,
+                Set *subvolumes,
                 HardlinkContext *hardlink_context,
                 const char *display_path,
                 copy_progress_path_t progress_path,
@@ -972,7 +986,7 @@ static int fd_copy_directory(
 
         fdt = xopenat_lock(dt, to,
                            O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOCTTY|O_NOFOLLOW|(exists ? 0 : O_CREAT|O_EXCL),
-                           (copy_flags & COPY_MAC_CREATE ? XO_LABEL : 0),
+                           (copy_flags & COPY_MAC_CREATE ? XO_LABEL : 0)|(set_contains(subvolumes, st) ? XO_SUBVOLUME : 0),
                            st->st_mode & 07777,
                            copy_flags & COPY_LOCK_BSD ? LOCK_BSD : LOCK_NONE,
                            LOCK_EX);
@@ -1054,7 +1068,7 @@ static int fd_copy_directory(
 
                 q = fd_copy_tree_generic(dirfd(d), de->d_name, &buf, fdt, de->d_name, original_device,
                                          depth_left-1, override_uid, override_gid, copy_flags & ~COPY_LOCK_BSD,
-                                         denylist, hardlink_context, child_display_path, progress_path,
+                                         denylist, subvolumes, hardlink_context, child_display_path, progress_path,
                                          progress_bytes, userdata);
 
                 if (q == -EINTR) /* Propagate SIGINT/SIGTERM up instantly */
@@ -1131,6 +1145,7 @@ static int fd_copy_tree_generic(
                 gid_t override_gid,
                 CopyFlags copy_flags,
                 Hashmap *denylist,
+                Set *subvolumes,
                 HardlinkContext *hardlink_context,
                 const char *display_path,
                 copy_progress_path_t progress_path,
@@ -1143,8 +1158,8 @@ static int fd_copy_tree_generic(
 
         if (S_ISDIR(st->st_mode))
                 return fd_copy_directory(df, from, st, dt, to, original_device, depth_left-1, override_uid,
-                                         override_gid, copy_flags, denylist, hardlink_context, display_path,
-                                         progress_path, progress_bytes, userdata);
+                                         override_gid, copy_flags, denylist, subvolumes, hardlink_context,
+                                         display_path, progress_path, progress_bytes, userdata);
 
         DenyType t = PTR_TO_INT(hashmap_get(denylist, st));
         if (t == DENY_INODE) {
@@ -1175,6 +1190,7 @@ int copy_tree_at_full(
                 gid_t override_gid,
                 CopyFlags copy_flags,
                 Hashmap *denylist,
+                Set *subvolumes,
                 copy_progress_path_t progress_path,
                 copy_progress_bytes_t progress_bytes,
                 void *userdata) {
@@ -1190,7 +1206,7 @@ int copy_tree_at_full(
                 return -errno;
 
         r = fd_copy_tree_generic(fdf, from, &st, fdt, to, st.st_dev, COPY_DEPTH_MAX, override_uid,
-                                 override_gid, copy_flags, denylist, NULL, NULL, progress_path,
+                                 override_gid, copy_flags, denylist, subvolumes, NULL, NULL, progress_path,
                                  progress_bytes, userdata);
         if (r < 0)
                 return r;
@@ -1259,7 +1275,7 @@ int copy_directory_at_full(
                         COPY_DEPTH_MAX,
                         UID_INVALID, GID_INVALID,
                         copy_flags,
-                        NULL, NULL, NULL,
+                        NULL, NULL, NULL, NULL,
                         progress_path,
                         progress_bytes,
                         userdata);

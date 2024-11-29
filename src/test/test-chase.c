@@ -73,6 +73,11 @@ TEST(chase) {
         assert_se(path_equal(result, "/usr"));
         result = mfree(result);
 
+        r = chase(p, "/.//../../../", 0, &result, NULL);
+        assert_se(r > 0);
+        assert_se(path_equal(result, "/usr"));
+        result = mfree(result);
+
         pslash = strjoina(p, "/");
         r = chase(pslash, NULL, 0, &result, NULL);
         assert_se(r > 0);
@@ -714,6 +719,33 @@ TEST(chaseat_prefix_root) {
         assert_se(chaseat_prefix_root("./hoge/aaa/../././b", "a/b//./c///", &ret) >= 0);
         assert_se(expected = path_join(cwd, "a/b/c/hoge/aaa/../././b"));
         assert_se(streq(ret, expected));
+}
+
+TEST(trailing_dot_dot) {
+        _cleanup_free_ char *path = NULL, *fdpath = NULL;
+        _cleanup_close_ int fd = -EBADF;
+
+        assert_se(chase("/usr/..", NULL, CHASE_PARENT, &path, &fd) >= 0);
+        assert_se(path_equal(path, "/"));
+        assert_se(fd_get_path(fd, &fdpath) >= 0);
+        assert_se(path_equal(fdpath, "/"));
+
+        path = mfree(path);
+        fdpath = mfree(fdpath);
+        fd = safe_close(fd);
+
+        _cleanup_(rm_rf_physical_and_freep) char *t = NULL;
+        assert_se(mkdtemp_malloc(NULL, &t) >= 0);
+        _cleanup_free_ char *sub = ASSERT_PTR(path_join(t, "a/b/c/d"));
+        assert_se(mkdir_p(sub, 0700) >= 0);
+        _cleanup_free_ char *suffixed = ASSERT_PTR(path_join(sub, ".."));
+        assert_se(chase(suffixed, NULL, CHASE_PARENT, &path, &fd) >= 0);
+        _cleanup_free_ char *expected1 = ASSERT_PTR(path_join(t, "a/b/c"));
+        _cleanup_free_ char *expected2 = ASSERT_PTR(path_join(t, "a/b"));
+
+        assert_se(path_equal(path, expected1));
+        assert_se(fd_get_path(fd, &fdpath) >= 0);
+        assert_se(path_equal(fdpath, expected2));
 }
 
 static int intro(void) {

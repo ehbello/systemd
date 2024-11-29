@@ -40,7 +40,7 @@ export SYSTEMD_LOG_TARGET=journal
 at_exit() {
     set +e
 
-    mountpoint -q /var/lib/machines && umount /var/lib/machines
+    mountpoint -q /var/lib/machines && umount --recursive /var/lib/machines
     rm -f /run/systemd/nspawn/*.nspawn
 }
 
@@ -341,7 +341,7 @@ testcase_nspawn_settings() {
     rm -f "/etc/systemd/nspawn/$container.nspawn"
     mkdir -p "$root/tmp" "$root"/opt/{tmp,inaccessible,also-inaccessible}
 
-    for dev in sd-host-only sd-shared{1,2} sd-macvlan{1,2} sd-ipvlan{1,2}; do
+    for dev in sd-host-only sd-shared{1,2} sd-macvlan{1,2} sd-macvlanloong sd-ipvlan{1,2} sd-ipvlanlooong; do
         ip link add "$dev" type dummy
     done
     udevadm settle
@@ -395,8 +395,8 @@ VirtualEthernet=yes
 VirtualEthernetExtra=my-fancy-veth1
 VirtualEthernetExtra=fancy-veth2:my-fancy-veth2
 Interface=sd-shared1 sd-shared2:sd-shared2
-MACVLAN=sd-macvlan1 sd-macvlan2:my-macvlan2
-IPVLAN=sd-ipvlan1 sd-ipvlan2:my-ipvlan2
+MACVLAN=sd-macvlan1 sd-macvlan2:my-macvlan2 sd-macvlanloong
+IPVLAN=sd-ipvlan1 sd-ipvlan2:my-ipvlan2 sd-ipvlanlooong
 Zone=sd-zone0
 Port=80
 Port=81:8181
@@ -839,6 +839,36 @@ matrix_run_one() {
     rm -fr "$root"
 
     return 0
+}
+
+testcase_check_os_release() {
+    # https://github.com/systemd/systemd/issues/29185
+    local base common_opts root
+
+    base="$(mktemp -d /var/lib/machines/testsuite-13.check_os_release_base.XXX)"
+    root="$(mktemp -d /var/lib/machines/testsuite-13.check_os_release.XXX)"
+    create_dummy_container "$base"
+    cp -d "$base"/{bin,sbin,lib,lib64} "$root/"
+    common_opts=(
+        --boot
+        --register=no
+        --directory="$root"
+        --bind-ro="$base/usr:/usr"
+    )
+
+    # Empty /etc/ & /usr/
+    (! systemd-nspawn "${common_opts[@]}")
+    (! SYSTEMD_NSPAWN_CHECK_OS_RELEASE=1 systemd-nspawn "${common_opts[@]}")
+    (! SYSTEMD_NSPAWN_CHECK_OS_RELEASE=foo systemd-nspawn "${common_opts[@]}")
+    SYSTEMD_NSPAWN_CHECK_OS_RELEASE=0 systemd-nspawn "${common_opts[@]}"
+
+    # Empty /usr/ + a broken /etc/os-release -> /usr/os-release symlink
+    ln -svrf "$root/etc/os-release" "$root/usr/os-release"
+    (! systemd-nspawn "${common_opts[@]}")
+    (! SYSTEMD_NSPAWN_CHECK_OS_RELEASE=1 systemd-nspawn "${common_opts[@]}")
+    SYSTEMD_NSPAWN_CHECK_OS_RELEASE=0 systemd-nspawn "${common_opts[@]}"
+
+    rm -fr "$root" "$base"
 }
 
 run_testcases

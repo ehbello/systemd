@@ -13,14 +13,37 @@
 #include "nulstr-util.h"
 #include "parse-util.h"
 #include "path-util.h"
+#include "proc-cmdline.h"
 #include "string-util.h"
 #include "strv.h"
+
+bool fstab_enabled_full(int enabled) {
+        static int cached = -1;
+        bool val = true; /* If nothing specified or the check fails, then defaults to true. */
+        int r;
+
+        /* If 'enabled' is non-negative, then update the cache with it. */
+        if (enabled >= 0)
+                cached = enabled;
+
+        if (cached >= 0)
+                return cached;
+
+        r = proc_cmdline_get_bool("fstab", PROC_CMDLINE_STRIP_RD_PREFIX|PROC_CMDLINE_TRUE_WHEN_MISSING, &val);
+        if (r < 0)
+                log_debug_errno(r, "Failed to parse fstab= kernel command line option, ignoring: %m");
+
+        return (cached = val);
+}
 
 int fstab_has_fstype(const char *fstype) {
         _cleanup_endmntent_ FILE *f = NULL;
         struct mntent *m;
 
         assert(fstype);
+
+        if (!fstab_enabled())
+                return false;
 
         f = setmntent(fstab_path(), "re");
         if (!f)
@@ -63,7 +86,7 @@ bool fstab_is_extrinsic(const char *mount, const char *opts) {
         return false;
 }
 
-static int fstab_is_mount_point_of(const char *what_fstab, const char *path) {
+static int fstab_is_same_node(const char *what_fstab, const char *path) {
         _cleanup_free_ char *node = NULL;
 
         assert(what_fstab);
@@ -76,7 +99,7 @@ static int fstab_is_mount_point_of(const char *what_fstab, const char *path) {
         if (path_equal(node, path))
                 return true;
 
-        if (is_device_node(path) && is_device_node(node))
+        if (is_device_path(path) && is_device_path(node))
                 return devnode_same(node, path);
 
         return false;
@@ -86,7 +109,10 @@ int fstab_is_mount_point_full(const char *where, const char *path) {
         _cleanup_endmntent_ FILE *f = NULL;
         int r;
 
-        assert(where);
+        assert(where || path);
+
+        if (!fstab_enabled())
+                return false;
 
         f = setmntent(fstab_path(), "re");
         if (!f)
@@ -100,14 +126,15 @@ int fstab_is_mount_point_full(const char *where, const char *path) {
                 if (!me)
                         return errno != 0 ? -errno : false;
 
-                if (path_equal(where, me->mnt_dir)) {
-                        if (!path)
-                                return true;
+                if (where && !path_equal(where, me->mnt_dir))
+                        continue;
 
-                        r = fstab_is_mount_point_of(me->mnt_fsname, path);
-                        if (r > 0 || (r < 0 && !ERRNO_IS_DEVICE_ABSENT(r)))
-                                return r;
-                }
+                if (!path)
+                        return true;
+
+                r = fstab_is_same_node(me->mnt_fsname, path);
+                if (r > 0 || (r < 0 && !ERRNO_IS_DEVICE_ABSENT(r)))
+                        return r;
         }
 
         return false;
@@ -304,19 +331,25 @@ static char *tag_to_udev_node(const char *tagvalue, const char *by) {
 }
 
 char *fstab_node_to_udev_node(const char *p) {
+        const char *q;
+
         assert(p);
 
-        if (startswith(p, "LABEL="))
-                return tag_to_udev_node(p+6, "label");
+        q = startswith(p, "LABEL=");
+        if (q)
+                return tag_to_udev_node(q, "label");
 
-        if (startswith(p, "UUID="))
-                return tag_to_udev_node(p+5, "uuid");
+        q = startswith(p, "UUID=");
+        if (q)
+                return tag_to_udev_node(q, "uuid");
 
-        if (startswith(p, "PARTUUID="))
-                return tag_to_udev_node(p+9, "partuuid");
+        q = startswith(p, "PARTUUID=");
+        if (q)
+                return tag_to_udev_node(q, "partuuid");
 
-        if (startswith(p, "PARTLABEL="))
-                return tag_to_udev_node(p+10, "partlabel");
+        q = startswith(p, "PARTLABEL=");
+        if (q)
+                return tag_to_udev_node(q, "partlabel");
 
         return strdup(p);
 }

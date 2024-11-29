@@ -656,7 +656,7 @@ static int context_write_data_machine_info(Context *c) {
                 return 0;
         }
 
-        r = write_env_file_label("/etc/machine-info", l);
+        r = write_env_file_label(AT_FDCWD, "/etc/machine-info", NULL, l);
         if (r < 0)
                 return r;
 
@@ -1318,7 +1318,7 @@ static int method_describe(sd_bus_message *m, void *userdata, sd_bus_error *erro
                         false,
                         UID_INVALID,
                         &c->polkit_registry,
-                        NULL);
+                        error);
         if (r == 0)
                 return 1; /* No authorization for now, but the async polkit stuff will call us again when it has it */
 

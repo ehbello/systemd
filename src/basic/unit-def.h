@@ -97,7 +97,6 @@ typedef enum MountState {
         MOUNT_REMOUNTING_SIGKILL,
         MOUNT_UNMOUNTING_SIGTERM,
         MOUNT_UNMOUNTING_SIGKILL,
-        MOUNT_UNMOUNTING_CATCHUP,
         MOUNT_FAILED,
         MOUNT_CLEANING,
         _MOUNT_STATE_MAX,
@@ -287,6 +286,8 @@ const char *unit_dbus_interface_from_name(const char *name);
 
 const char *unit_type_to_string(UnitType i) _const_;
 UnitType unit_type_from_string(const char *s) _pure_;
+
+const char* unit_type_to_capitalized_string(UnitType t);
 
 const char *unit_load_state_to_string(UnitLoadState i) _const_;
 UnitLoadState unit_load_state_from_string(const char *s) _pure_;
