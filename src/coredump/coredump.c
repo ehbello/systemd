@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1+ */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <errno.h>
 #include <stdio.h>
@@ -46,6 +46,7 @@
 #include "string-util.h"
 #include "strv.h"
 #include "tmpfile-util.h"
+#include "user-record.h"
 #include "user-util.h"
 
 /* The maximum size up to which we process coredumps */
@@ -77,7 +78,7 @@ enum {
         META_ARGV_UID,          /* %u: as seen in the initial user namespace */
         META_ARGV_GID,          /* %g: as seen in the initial user namespace */
         META_ARGV_SIGNAL,       /* %s: number of signal causing dump */
-        META_ARGV_TIMESTAMP,    /* %t: time of dump, expressed as seconds since the Epoch */
+        META_ARGV_TIMESTAMP,    /* %t: time of dump, expressed as seconds since the Epoch (we expand this to µs granularity) */
         META_ARGV_RLIMIT,       /* %c: core file size soft resource limit */
         META_ARGV_HOSTNAME,     /* %h: hostname */
         _META_ARGV_MAX,
@@ -186,9 +187,9 @@ static int fix_acl(int fd, uid_t uid) {
                 return 0;
 
         /* Make sure normal users can read (but not write or delete) their own coredumps */
-        r = add_acls_for_user(fd, uid);
+        r = fd_add_uid_acl_permission(fd, uid, ACL_READ);
         if (r < 0)
-                return log_error_errno(r, "Failed to adjust ACL of coredump: %m");
+                return log_error_errno(r, "Failed to adjust ACL of the coredump: %m");
 #endif
 
         return 0;
@@ -311,7 +312,7 @@ static int make_filename(const Context *context, char **ret) {
                 return -ENOMEM;
 
         if (asprintf(ret,
-                     "/var/lib/systemd/coredump/core.%s.%s." SD_ID128_FORMAT_STR ".%s.%s000000",
+                     "/var/lib/systemd/coredump/core.%s.%s." SD_ID128_FORMAT_STR ".%s.%s",
                      c,
                      u,
                      SD_ID128_FORMAT_VAL(boot),
@@ -352,7 +353,7 @@ static int save_external_coredump(
         if (r < 0)
                 return log_error_errno(r, "Failed to parse resource limit '%s': %m",
                                        context->meta[META_ARGV_RLIMIT]);
-        if (rlimit < page_size()) {
+        if (rlimit < page_size())
                 /* Is coredumping disabled? Then don't bother saving/processing the
                  * coredump.  Anything below PAGE_SIZE cannot give a readable coredump
                  * (the kernel uses ELF_EXEC_PAGESIZE which is not easily accessible, but
@@ -360,7 +361,6 @@ static int save_external_coredump(
                 return log_info_errno(SYNTHETIC_ERRNO(EBADSLT),
                                       "Resource limits disable core dumping for process %s (%s).",
                                       context->meta[META_ARGV_PID], context->meta[META_COMM]);
-        }
 
         process_limit = MAX(arg_process_size_max, storage_size_max());
         if (process_limit == 0)
@@ -607,7 +607,7 @@ static int get_process_ns(pid_t pid, const char *namespace, ino_t *ns) {
 static int get_mount_namespace_leader(pid_t pid, pid_t *container_pid) {
         pid_t cpid = pid, ppid = 0;
         ino_t proc_mntns;
-        int r = 0;
+        int r;
 
         r = get_process_ns(pid, "mnt", &proc_mntns);
         if (r < 0)
@@ -682,7 +682,7 @@ static int change_uid_gid(const Context *context) {
         if (r < 0)
                 return r;
 
-        if (uid <= SYSTEM_UID_MAX) {
+        if (uid_is_system(uid)) {
                 const char *user = "systemd-coredump";
 
                 r = get_user_creds(&user, &uid, &gid, NULL, NULL, 0);
@@ -1016,8 +1016,11 @@ static int send_iovec(const struct iovec_wrapper *iovw, int input_fd) {
         return 0;
 }
 
-static int gather_pid_metadata_from_argv(struct iovec_wrapper *iovw, Context *context,
-                                         int argc, char **argv) {
+static int gather_pid_metadata_from_argv(
+                struct iovec_wrapper *iovw,
+                Context *context,
+                int argc, char **argv) {
+
         _cleanup_free_ char *free_timestamp = NULL;
         int i, r, signo;
         char *t;
@@ -1035,6 +1038,7 @@ static int gather_pid_metadata_from_argv(struct iovec_wrapper *iovw, Context *co
                 t = argv[i];
 
                 switch (i) {
+
                 case META_ARGV_TIMESTAMP:
                         /* The journal fields contain the timestamp padded with six
                          * zeroes, so that the kernel-supplied 1s granularity timestamps
@@ -1044,12 +1048,14 @@ static int gather_pid_metadata_from_argv(struct iovec_wrapper *iovw, Context *co
                         if (!t)
                                 return log_oom();
                         break;
+
                 case META_ARGV_SIGNAL:
                         /* For signal, record its pretty name too */
                         if (safe_atoi(argv[i], &signo) >= 0 && SIGNAL_VALID(signo))
                                 (void) iovw_put_string_field(iovw, "COREDUMP_SIGNAL_NAME=SIG",
                                                              signal_to_string(signo));
                         break;
+
                 default:
                         break;
                 }

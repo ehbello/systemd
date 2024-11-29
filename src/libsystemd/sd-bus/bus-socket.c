@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1+ */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <endian.h>
 #include <poll.h>
@@ -544,9 +544,11 @@ static int bus_socket_read_auth(sd_bus *b) {
 
         iov = IOVEC_MAKE((uint8_t *)b->rbuffer + b->rbuffer_size, n - b->rbuffer_size);
 
-        if (b->prefer_readv)
+        if (b->prefer_readv) {
                 k = readv(b->input_fd, &iov, 1);
-        else {
+                if (k < 0)
+                        k = -errno;
+        } else {
                 mh = (struct msghdr) {
                         .msg_iov = &iov,
                         .msg_iovlen = 1,
@@ -883,6 +885,13 @@ int bus_socket_connect(sd_bus *b) {
                 assert(b->output_fd < 0);
                 assert(b->sockaddr.sa.sa_family != AF_UNSPEC);
 
+                if (DEBUG_LOGGING) {
+                        _cleanup_free_ char *pretty = NULL;
+                        (void) sockaddr_pretty(&b->sockaddr.sa, b->sockaddr_size, false, true, &pretty);
+                        log_debug("sd-bus: starting bus%s%s by connecting to %s...",
+                                  b->description ? " " : "", strempty(b->description), strnull(pretty));
+                }
+
                 b->input_fd = socket(b->sockaddr.sa.sa_family, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0);
                 if (b->input_fd < 0)
                         return -errno;
@@ -953,6 +962,9 @@ int bus_socket_exec(sd_bus *b) {
         assert(b->output_fd < 0);
         assert(b->exec_path);
         assert(b->busexec_pid == 0);
+
+        log_debug("sd-bus: starting bus%s%s with %s...",
+                  b->description ? " " : "", strempty(b->description), b->exec_path);
 
         r = socketpair(AF_UNIX, SOCK_STREAM|SOCK_NONBLOCK|SOCK_CLOEXEC, 0, s);
         if (r < 0)
@@ -1187,9 +1199,11 @@ int bus_socket_read_message(sd_bus *bus) {
 
         iov = IOVEC_MAKE((uint8_t *)bus->rbuffer + bus->rbuffer_size, need - bus->rbuffer_size);
 
-        if (bus->prefer_readv)
+        if (bus->prefer_readv) {
                 k = readv(bus->input_fd, &iov, 1);
-        else {
+                if (k < 0)
+                        k = -errno;
+        } else {
                 mh = (struct msghdr) {
                         .msg_iov = &iov,
                         .msg_iovlen = 1,

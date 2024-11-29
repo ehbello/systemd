@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1+ */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <errno.h>
 #include <sys/stat.h>
@@ -133,10 +133,8 @@ static int on_reboot(Context *c) {
         t = get_startup_time(c);
 
         q = utmp_put_reboot(t);
-        if (q < 0) {
-                log_error_errno(q, "Failed to write utmp record: %m");
-                r = q;
-        }
+        if (q < 0)
+                r = log_error_errno(q, "Failed to write utmp record: %m");
 
         return r;
 }
@@ -157,10 +155,8 @@ static int on_shutdown(Context *c) {
 #endif
 
         q = utmp_put_shutdown();
-        if (q < 0) {
-                log_error_errno(q, "Failed to write utmp record: %m");
-                r = q;
-        }
+        if (q < 0)
+                r = log_error_errno(q, "Failed to write utmp record: %m");
 
         return r;
 }
@@ -187,8 +183,10 @@ static int on_runlevel(Context *c) {
         runlevel = get_current_runlevel(c);
         if (runlevel < 0)
                 return runlevel;
-        if (runlevel == 0)
-                return log_warning("Failed to get new runlevel, utmp update skipped.");
+        if (runlevel == 0) {
+                log_warning("Failed to get new runlevel, utmp update skipped.");
+                return 0;
+        }
 
         if (previous == runlevel)
                 return 0;

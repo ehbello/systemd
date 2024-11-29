@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1+ */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <fcntl.h>
 #include <limits.h>
@@ -15,6 +15,7 @@
 #include "io-util.h"
 #include "parse-util.h"
 #include "process-util.h"
+#include "random-util.h"
 #include "rm-rf.h"
 #include "socket-util.h"
 #include "string-util.h"
@@ -151,6 +152,18 @@ static void test_parse_env_file(void) {
         assert_se(r >= 0);
 }
 
+static void test_one_shell_var(const char *file, const char *variable, const char *value) {
+        _cleanup_free_ char *cmd = NULL, *from_shell = NULL;
+        _cleanup_pclose_ FILE *f = NULL;
+        size_t sz;
+
+        assert_se(cmd = strjoin(". ", file, " && /bin/echo -n \"$", variable, "\""));
+        assert_se(f = popen(cmd, "re"));
+        assert_se(read_full_stream(f, &from_shell, &sz) >= 0);
+        assert_se(sz == strlen(value));
+        assert_se(streq(from_shell, value));
+}
+
 static void test_parse_multiline_env_file(void) {
         _cleanup_(unlink_tempfilep) char
                 t[] = "/tmp/test-fileio-in-XXXXXX",
@@ -162,8 +175,8 @@ static void test_parse_multiline_env_file(void) {
 
         assert_se(fmkostemp_safe(t, "w", &f) == 0);
         fputs("one=BAR\\\n"
-              "    VAR\\\n"
-              "\tGAR\n"
+              "\\ \\ \\ \\ VAR\\\n"
+              "\\\tGAR\n"
               "#comment\n"
               "two=\"bar\\\n"
               "    var\\\n"
@@ -173,8 +186,12 @@ static void test_parse_multiline_env_file(void) {
               "    var \\\n"
               "\tgar \"\n", f);
 
-        fflush(f);
+        assert_se(fflush_and_check(f) >= 0);
         fclose(f);
+
+        test_one_shell_var(t, "one", "BAR    VAR\tGAR");
+        test_one_shell_var(t, "two", "bar    var\tgar");
+        test_one_shell_var(t, "tri", "bar     var \tgar ");
 
         r = load_env_file(NULL, t, &a);
         assert_se(r >= 0);
@@ -847,7 +864,7 @@ static void test_read_nul_string(void) {
 static void test_read_full_file_socket(void) {
         _cleanup_(rm_rf_physical_and_freep) char *z = NULL;
         _cleanup_close_ int listener = -1;
-        _cleanup_free_ char *data = NULL;
+        _cleanup_free_ char *data = NULL, *clientname = NULL;
         union sockaddr_union sa;
         const char *j;
         size_t size;
@@ -867,14 +884,26 @@ static void test_read_full_file_socket(void) {
         assert_se(bind(listener, &sa.sa, SOCKADDR_UN_LEN(sa.un)) >= 0);
         assert_se(listen(listener, 1) >= 0);
 
+        /* Bind the *client* socket to some randomized name, to verify that this works correctly. */
+        assert_se(asprintf(&clientname, "@%" PRIx64 "/test-bindname", random_u64()) >= 0);
+
         r = safe_fork("(server)", FORK_DEATHSIG|FORK_LOG, &pid);
         assert_se(r >= 0);
         if (r == 0) {
+                union sockaddr_union peer = {};
+                socklen_t peerlen = sizeof(peer);
                 _cleanup_close_ int rfd = -1;
                 /* child */
 
                 rfd = accept4(listener, NULL, 0, SOCK_CLOEXEC);
                 assert_se(rfd >= 0);
+
+                assert_se(getpeername(rfd, &peer.sa, &peerlen) >= 0);
+
+                assert_se(peer.un.sun_family == AF_UNIX);
+                assert_se(peerlen > offsetof(struct sockaddr_un, sun_path));
+                assert_se(peer.un.sun_path[0] == 0);
+                assert_se(streq(peer.un.sun_path + 1, clientname + 1));
 
 #define TEST_STR "This is a test\nreally."
 
@@ -882,8 +911,8 @@ static void test_read_full_file_socket(void) {
                 _exit(EXIT_SUCCESS);
         }
 
-        assert_se(read_full_file_full(AT_FDCWD, j, 0, &data, &size) == -ENXIO);
-        assert_se(read_full_file_full(AT_FDCWD, j, READ_FULL_FILE_CONNECT_SOCKET, &data, &size) >= 0);
+        assert_se(read_full_file_full(AT_FDCWD, j, 0, NULL, &data, &size) == -ENXIO);
+        assert_se(read_full_file_full(AT_FDCWD, j, READ_FULL_FILE_CONNECT_SOCKET, clientname, &data, &size) >= 0);
         assert_se(size == strlen(TEST_STR));
         assert_se(streq(data, TEST_STR));
 

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1+ */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <sys/utsname.h>
 #include <errno.h>
@@ -174,7 +174,7 @@ int cat_files(const char *file, char **dropins, CatFlags flags) {
         if (file) {
                 r = cat_file(file, false);
                 if (r == -ENOENT && (flags & CAT_FLAGS_MAIN_FILE_OPTIONAL))
-                        printf("%s# config file %s not found%s\n",
+                        printf("%s# Configuration file %s not found%s\n",
                                ansi_highlight_magenta(),
                                file,
                                ansi_normal());
@@ -233,6 +233,12 @@ static int guess_type(const char **name, char ***prefixes, bool *is_collection, 
         n = strdup(*name);
         if (!n)
                 return log_oom();
+
+        /* All systemd-style config files should support the /usr-/etc-/run split and
+         * dropins. Let's add a blanket rule that allows us to support them without keeping
+         * an explicit list. */
+        if (path_startswith(n, "systemd") && endswith(n, ".conf"))
+                usr = true;
 
         delete_trailing_chars(n, "/");
 

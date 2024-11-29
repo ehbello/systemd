@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1+ */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
 #include <stdbool.h>
@@ -233,7 +233,7 @@ struct Manager {
         Hashmap *unit_id_map;
         Hashmap *unit_name_map;
         Set *unit_path_cache;
-        usec_t unit_cache_mtime;
+        uint64_t unit_cache_timestamp_hash;
 
         char **transient_environment;  /* The environment, as determined from config files, kernel cmdline and environment generators */
         char **client_environment;     /* Environment variables created by clients through the bus API */
@@ -424,6 +424,7 @@ struct Manager {
 
         /* Prefixes of e.g. RuntimeDirectory= */
         char *prefix[_EXEC_DIRECTORY_TYPE_MAX];
+        char *received_credentials;
 
         /* Used in the SIGCHLD and sd_notify() message invocation logic to avoid that we dispatch the same event
          * multiple times on the same unit. */
@@ -433,6 +434,8 @@ struct Manager {
         bool honor_device_enumeration;
 
         VarlinkServer *varlink_server;
+        /* Only systemd-oomd should be using this to subscribe to changes in ManagedOOM settings */
+        Varlink *managed_oom_varlink_request;
 };
 
 static inline usec_t manager_default_timeout_abort_usec(Manager *m) {
@@ -463,7 +466,7 @@ Unit *manager_get_unit(Manager *m, const char *name);
 
 int manager_get_job_from_dbus_path(Manager *m, const char *s, Job **_j);
 
-bool manager_unit_file_maybe_loadable_from_cache(Unit *u);
+bool manager_unit_cache_should_retry_load(Unit *u);
 int manager_load_unit_prepare(Manager *m, const char *name, const char *path, sd_bus_error *e, Unit **_ret);
 int manager_load_unit(Manager *m, const char *name, const char *path, sd_bus_error *e, Unit **_ret);
 int manager_load_startable_unit_or_warn(Manager *m, const char *name, const char *path, Unit **ret);

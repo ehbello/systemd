@@ -1,8 +1,10 @@
-/* SPDX-License-Identifier: LGPL-2.1+ */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
 #include "conf-parser.h"
+#include "networkd-address.h"
 #include "networkd-link.h"
+#include "networkd-route.h"
 #include "time-util.h"
 
 typedef struct IPv6Token IPv6Token;
@@ -23,9 +25,24 @@ typedef enum IPv6AcceptRAStartDHCP6Client {
         _IPV6_ACCEPT_RA_START_DHCP6_CLIENT_INVALID = -1,
 } IPv6AcceptRAStartDHCP6Client;
 
+typedef struct NDiscAddress {
+        /* Used when GC'ing old DNS servers when configuration changes. */
+        bool marked;
+        struct in6_addr router;
+        Address *address;
+} NDiscAddress;
+
+typedef struct NDiscRoute {
+        /* Used when GC'ing old DNS servers when configuration changes. */
+        bool marked;
+        struct in6_addr router;
+        Route *route;
+} NDiscRoute;
+
 typedef struct NDiscRDNSS {
         /* Used when GC'ing old DNS servers when configuration changes. */
         bool marked;
+        struct in6_addr router;
         usec_t valid_until;
         struct in6_addr address;
 } NDiscRDNSS;
@@ -33,6 +50,7 @@ typedef struct NDiscRDNSS {
 typedef struct NDiscDNSSL {
         /* Used when GC'ing old domains when configuration changes. */
         bool marked;
+        struct in6_addr router;
         usec_t valid_until;
         /* The domain name follows immediately. */
 } NDiscDNSSL;
@@ -50,6 +68,10 @@ DEFINE_TRIVIAL_CLEANUP_FUNC(IPv6Token *, freep);
 static inline char* NDISC_DNSSL_DOMAIN(const NDiscDNSSL *n) {
         return ((char*) n) + ALIGN(sizeof(NDiscDNSSL));
 }
+
+bool link_ipv6_accept_ra_enabled(Link *link);
+
+void network_adjust_ipv6_accept_ra(Network *network);
 
 int ndisc_configure(Link *link);
 void ndisc_vacuum(Link *link);

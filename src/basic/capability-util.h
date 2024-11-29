@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1+ */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
 #include <stdbool.h>
@@ -14,6 +14,7 @@
 
 unsigned cap_last_cap(void);
 int have_effective_cap(int value);
+int capability_gain_cap_setpcap(cap_t *return_caps);
 int capability_bounding_set_drop(uint64_t keep, bool right_now);
 int capability_bounding_set_drop_usermode(uint64_t keep);
 

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1+ */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <errno.h>
 #include <fcntl.h>
@@ -237,6 +237,9 @@ int ask_password_plymouth(
 
         assert(ret);
 
+        if (!message)
+                message = "Password:";
+
         if (flag_file) {
                 notify = inotify_init1(IN_CLOEXEC|IN_NONBLOCK);
                 if (notify < 0)
@@ -330,9 +333,6 @@ int ask_password_plymouth(
                 }
 
                 p += k;
-
-                if (p < 1)
-                        continue;
 
                 if (buffer[0] == 5) {
 

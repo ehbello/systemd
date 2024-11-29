@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1+ */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <arpa/inet.h>
 #include <assert.h>
@@ -646,14 +646,13 @@ int bpf_firewall_load_custom(Unit *u) {
 
 static int attach_custom_bpf_progs(Unit *u, const char *path, int attach_type, Set **set, Set **set_installed) {
         BPFProgram *prog;
-        Iterator i;
         int r;
 
         assert(u);
 
         set_clear(*set_installed);
 
-        SET_FOREACH(prog, *set, i) {
+        SET_FOREACH(prog, *set) {
                 r = bpf_program_cgroup_attach(prog, attach_type, path, BPF_F_ALLOW_MULTI);
                 if (r < 0)
                         return log_unit_error_errno(u, r, "Attaching custom egress BPF program to cgroup %s failed: %m", path);
@@ -900,11 +899,11 @@ void emit_bpf_firewall_warning(Unit *u) {
         if (!warned) {
                 bool quiet = bpf_firewall_unsupported_reason == -EPERM && detect_container();
 
-                log_unit_full(u, quiet ? LOG_DEBUG : LOG_WARNING, bpf_firewall_unsupported_reason,
-                              "unit configures an IP firewall, but %s.\n"
-                              "(This warning is only shown for the first unit using IP firewalling.)",
-                              getuid() != 0 ? "not running as root" :
-                                              "the local system does not support BPF/cgroup firewalling");
+                log_unit_full_errno(u, quiet ? LOG_DEBUG : LOG_WARNING, bpf_firewall_unsupported_reason,
+                                    "unit configures an IP firewall, but %s.\n"
+                                    "(This warning is only shown for the first unit using IP firewalling.)",
+                                    getuid() != 0 ? "not running as root" :
+                                                    "the local system does not support BPF/cgroup firewalling");
                 warned = true;
         }
 }

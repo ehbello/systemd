@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1+ */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <errno.h>
 #include <stdio.h>
@@ -425,7 +425,7 @@ static int add_mount(
                  * the systemd mount-timeout doesn't interfere.
                  * By placing these options first, they can be over-ridden by
                  * settings in /etc/fstab. */
-                opts = strjoina("x-systemd.mount-timeout=infinity,retry=10000,", opts, ",fg");
+                opts = strjoina("x-systemd.mount-timeout=infinity,retry=10000,nofail,", opts, ",fg");
                 SET_FLAG(flags, NOFAIL, true);
         }
 

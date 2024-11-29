@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1+ */
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <sys/poll.h>
 
@@ -9,6 +9,7 @@
 #include "io-util.h"
 #include "list.h"
 #include "process-util.h"
+#include "selinux-util.h"
 #include "set.h"
 #include "socket-util.h"
 #include "string-table.h"
@@ -417,6 +418,11 @@ static int varlink_test_disconnect(Varlink *v) {
         if (IN_SET(v->state, VARLINK_IDLE_CLIENT) && (v->write_disconnected || v->got_pollhup))
                 goto disconnect;
 
+        /* The server is still expecting to write more, but its write end is disconnected and it got a POLLHUP
+         * (i.e. from a disconnected client), so disconnect. */
+        if (IN_SET(v->state, VARLINK_PENDING_METHOD, VARLINK_PENDING_METHOD_MORE) && v->write_disconnected && v->got_pollhup)
+                goto disconnect;
+
         return 0;
 
 disconnect:
@@ -579,11 +585,17 @@ static int varlink_parse_message(Varlink *v) {
 
         sz = e - begin + 1;
 
-        varlink_log(v, "New incoming message: %s", begin);
+        varlink_log(v, "New incoming message: %s", begin); /* FIXME: should we output the whole message here before validation?
+                                                            * This may produce a non-printable journal entry if the message
+                                                            * is invalid. We may also expose privileged information. */
 
         r = json_parse(begin, 0, &v->current, NULL, NULL);
-        if (r < 0)
-                return r;
+        if (r < 0) {
+                /* If we encounter a parse failure flush all data. We cannot possibly recover from this,
+                 * hence drop all buffered data now. */
+                v->input_buffer_index = v->input_buffer_size = v->input_buffer_unscanned = 0;
+                return varlink_log_errno(v, r, "Failed to parse JSON: %m");
+        }
 
         v->input_buffer_size -= sz;
 
@@ -862,7 +874,7 @@ static int varlink_dispatch_method(Varlink *v) {
 
                         /* We got an error back from the callback. Propagate it to the client if the method call remains unanswered. */
                         if (!FLAGS_SET(flags, VARLINK_METHOD_ONEWAY)) {
-                                r = varlink_errorb(v, VARLINK_ERROR_SYSTEM, JSON_BUILD_OBJECT(JSON_BUILD_PAIR("errno", JSON_BUILD_INTEGER(-r))));
+                                r = varlink_error_errno(v, r);
                                 if (r < 0)
                                         return r;
                         }
@@ -1038,10 +1050,8 @@ int varlink_wait(Varlink *v, usec_t timeout) {
                 return events;
 
         r = fd_wait_for_event(fd, events, t);
-        if (r < 0)
+        if (r <= 0)
                 return r;
-        if (r == 0)
-                return 0;
 
         handle_revents(v, r);
         return 1;
@@ -1659,6 +1669,13 @@ int varlink_error_invalid_parameter(Varlink *v, JsonVariant *parameters) {
         return -EINVAL;
 }
 
+int varlink_error_errno(Varlink *v, int error) {
+        return varlink_errorb(
+                        v,
+                        VARLINK_ERROR_SYSTEM,
+                        JSON_BUILD_OBJECT(JSON_BUILD_PAIR("errno", JSON_BUILD_INTEGER(abs(error)))));
+}
+
 int varlink_notify(Varlink *v, JsonVariant *parameters) {
         _cleanup_(json_variant_unrefp) JsonVariant *m = NULL;
         int r;
@@ -2198,9 +2215,7 @@ int varlink_server_listen_fd(VarlinkServer *s, int fd) {
         };
 
         if (s->event) {
-                _cleanup_(sd_event_source_unrefp) sd_event_source *es = NULL;
-
-                r = sd_event_add_io(s->event, &es, fd, EPOLLIN, connect_callback, ss);
+                r = sd_event_add_io(s->event, &ss->event_source, fd, EPOLLIN, connect_callback, ss);
                 if (r < 0)
                         return r;
 
@@ -2236,9 +2251,11 @@ int varlink_server_listen_address(VarlinkServer *s, const char *address, mode_t 
 
         (void) sockaddr_un_unlink(&sockaddr.un);
 
-        RUN_WITH_UMASK(~m & 0777)
-                if (bind(fd, &sockaddr.sa, sockaddr_len) < 0)
-                        return -errno;
+        RUN_WITH_UMASK(~m & 0777) {
+                r = mac_selinux_bind(fd, &sockaddr.sa, sockaddr_len);
+                if (r < 0)
+                        return r;
+        }
 
         if (listen(fd, SOMAXCONN) < 0)
                 return -errno;

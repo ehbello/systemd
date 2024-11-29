@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include <ctype.h>
 
@@ -182,43 +182,46 @@ struct UdevRules {
 
 /*** Logging helpers ***/
 
-#define log_rule_full(device, rules, level, error, fmt, ...)            \
+#define log_rule_full_errno(device, rules, level, error, fmt, ...)      \
         ({                                                              \
                 UdevRules *_r = (rules);                                \
                 UdevRuleFile *_f = _r ? _r->current_file : NULL;        \
                 UdevRuleLine *_l = _f ? _f->current_line : NULL;        \
                 const char *_n = _f ? _f->filename : NULL;              \
                                                                         \
-                log_device_full(device, level, error, "%s:%u " fmt,     \
-                                strna(_n), _l ? _l->line_number : 0,    \
-                                ##__VA_ARGS__);                         \
+                log_device_full_errno(device, level, error, "%s:%u " fmt, \
+                                      strna(_n), _l ? _l->line_number : 0, \
+                                      ##__VA_ARGS__);                   \
         })
 
-#define log_rule_debug(device, rules, ...)   log_rule_full(device, rules, LOG_DEBUG, 0, ##__VA_ARGS__)
-#define log_rule_info(device, rules, ...)    log_rule_full(device, rules, LOG_INFO, 0, ##__VA_ARGS__)
-#define log_rule_notice(device, rules, ...)  log_rule_full(device, rules, LOG_NOTICE, 0, ##__VA_ARGS__)
-#define log_rule_warning(device, rules, ...) log_rule_full(device, rules, LOG_WARNING, 0, ##__VA_ARGS__)
-#define log_rule_error(device, rules, ...)   log_rule_full(device, rules, LOG_ERR, 0, ##__VA_ARGS__)
+#define log_rule_full(device, rules, level, ...)   (void) log_rule_full_errno(device, rules, level, 0, __VA_ARGS__)
 
-#define log_rule_debug_errno(device, rules, error, ...)   log_rule_full(device, rules, LOG_DEBUG, error, ##__VA_ARGS__)
-#define log_rule_info_errno(device, rules, error, ...)    log_rule_full(device, rules, LOG_INFO, error, ##__VA_ARGS__)
-#define log_rule_notice_errno(device, rules, error, ...)  log_rule_full(device, rules, LOG_NOTICE, error, ##__VA_ARGS__)
-#define log_rule_warning_errno(device, rules, error, ...) log_rule_full(device, rules, LOG_WARNING, error, ##__VA_ARGS__)
-#define log_rule_error_errno(device, rules, error, ...)   log_rule_full(device, rules, LOG_ERR, error, ##__VA_ARGS__)
+#define log_rule_debug(device, rules, ...)   log_rule_full_errno(device, rules, LOG_DEBUG, 0, __VA_ARGS__)
+#define log_rule_info(device, rules, ...)    log_rule_full(device, rules, LOG_INFO, __VA_ARGS__)
+#define log_rule_notice(device, rules, ...)  log_rule_full(device, rules, LOG_NOTICE, __VA_ARGS__)
+#define log_rule_warning(device, rules, ...) log_rule_full(device, rules, LOG_WARNING, __VA_ARGS__)
+#define log_rule_error(device, rules, ...)   log_rule_full(device, rules, LOG_ERR, __VA_ARGS__)
 
-#define log_token_full(rules, ...) log_rule_full(NULL, rules, ##__VA_ARGS__)
+#define log_rule_debug_errno(device, rules, error, ...)   log_rule_full_errno(device, rules, LOG_DEBUG, error, __VA_ARGS__)
+#define log_rule_info_errno(device, rules, error, ...)    log_rule_full_errno(device, rules, LOG_INFO, error, __VA_ARGS__)
+#define log_rule_notice_errno(device, rules, error, ...)  log_rule_full_errno(device, rules, LOG_NOTICE, error, __VA_ARGS__)
+#define log_rule_warning_errno(device, rules, error, ...) log_rule_full_errno(device, rules, LOG_WARNING, error, __VA_ARGS__)
+#define log_rule_error_errno(device, rules, error, ...)   log_rule_full_errno(device, rules, LOG_ERR, error, __VA_ARGS__)
 
-#define log_token_debug(rules, ...)   log_token_full(rules, LOG_DEBUG, 0, ##__VA_ARGS__)
-#define log_token_info(rules, ...)    log_token_full(rules, LOG_INFO, 0, ##__VA_ARGS__)
-#define log_token_notice(rules, ...)  log_token_full(rules, LOG_NOTICE, 0, ##__VA_ARGS__)
-#define log_token_warning(rules, ...) log_token_full(rules, LOG_WARNING, 0, ##__VA_ARGS__)
-#define log_token_error(rules, ...)   log_token_full(rules, LOG_ERR, 0, ##__VA_ARGS__)
+#define log_token_full_errno(rules, level, error, ...) log_rule_full_errno(NULL, rules, level, error, __VA_ARGS__)
+#define log_token_full(rules, level, ...)  (void) log_token_full_errno(rules, level, 0, __VA_ARGS__)
 
-#define log_token_debug_errno(rules, error, ...)   log_token_full(rules, LOG_DEBUG, error, ##__VA_ARGS__)
-#define log_token_info_errno(rules, error, ...)    log_token_full(rules, LOG_INFO, error, ##__VA_ARGS__)
-#define log_token_notice_errno(rules, error, ...)  log_token_full(rules, LOG_NOTICE, error, ##__VA_ARGS__)
-#define log_token_warning_errno(rules, error, ...) log_token_full(rules, LOG_WARNING, error, ##__VA_ARGS__)
-#define log_token_error_errno(rules, error, ...)   log_token_full(rules, LOG_ERR, error, ##__VA_ARGS__)
+#define log_token_debug(rules, ...)   log_token_full_errno(rules, LOG_DEBUG, 0, __VA_ARGS__)
+#define log_token_info(rules, ...)    log_token_full(rules, LOG_INFO, __VA_ARGS__)
+#define log_token_notice(rules, ...)  log_token_full(rules, LOG_NOTICE, __VA_ARGS__)
+#define log_token_warning(rules, ...) log_token_full(rules, LOG_WARNING, __VA_ARGS__)
+#define log_token_error(rules, ...)   log_token_full(rules, LOG_ERR, __VA_ARGS__)
+
+#define log_token_debug_errno(rules, error, ...)   log_token_full_errno(rules, LOG_DEBUG, error, __VA_ARGS__)
+#define log_token_info_errno(rules, error, ...)    log_token_full_errno(rules, LOG_INFO, error, __VA_ARGS__)
+#define log_token_notice_errno(rules, error, ...)  log_token_full_errno(rules, LOG_NOTICE, error, __VA_ARGS__)
+#define log_token_warning_errno(rules, error, ...) log_token_full_errno(rules, LOG_WARNING, error, __VA_ARGS__)
+#define log_token_error_errno(rules, error, ...)   log_token_full_errno(rules, LOG_ERR, error, __VA_ARGS__)
 
 #define _log_token_invalid(rules, key, type)                      \
         log_token_error_errno(rules, SYNTHETIC_ERRNO(EINVAL),     \
@@ -477,7 +480,7 @@ static int rule_line_add_token(UdevRuleLine *rule_line, UdevRuleTokenType type, 
                 if (len > 0 && !isspace(value[len - 1]))
                         remove_trailing_whitespace = true;
 
-                subst_type = rule_get_substitution_type((const char*) data);
+                subst_type = rule_get_substitution_type(data);
         }
 
         token = new(UdevRuleToken, 1);
@@ -987,8 +990,9 @@ static UdevRuleOperatorType parse_operator(const char *op) {
 }
 
 static int parse_line(char **line, char **ret_key, char **ret_attr, UdevRuleOperatorType *ret_op, char **ret_value) {
-        char *key_begin, *key_end, *attr, *tmp, *value, *i, *j;
+        char *key_begin, *key_end, *attr, *tmp;
         UdevRuleOperatorType op;
+        int r;
 
         assert(line);
         assert(*line);
@@ -1028,30 +1032,14 @@ static int parse_line(char **line, char **ret_key, char **ret_attr, UdevRuleOper
         key_end[0] = '\0';
 
         tmp += op == OP_ASSIGN ? 1 : 2;
-        value = skip_leading_chars(tmp, NULL);
+        tmp = skip_leading_chars(tmp, NULL);
+        r = udev_rule_parse_value(tmp, ret_value, line);
+        if (r < 0)
+                return r;
 
-        /* value must be double quotated */
-        if (value[0] != '"')
-                return -EINVAL;
-        value++;
-
-        /* unescape double quotation '\"' -> '"' */
-        for (i = j = value; ; i++, j++) {
-                if (*i == '"')
-                        break;
-                if (*i == '\0')
-                        return -EINVAL;
-                if (i[0] == '\\' && i[1] == '"')
-                        i++;
-                *j = *i;
-        }
-        j[0] = '\0';
-
-        *line = i+1;
         *ret_key = key_begin;
         *ret_attr = attr;
         *ret_op = op;
-        *ret_value = value;
         return 1;
 }
 
@@ -1383,7 +1371,7 @@ static bool token_match_attr(UdevRuleToken *token, sd_device *dev, UdevEvent *ev
         assert(dev);
         assert(event);
 
-        name = (const char*) token->data;
+        name = token->data;
 
         switch (token->attr_subst_type) {
         case SUBST_TYPE_FORMAT:
@@ -1582,7 +1570,7 @@ static int udev_rule_apply_token_to_event(
         case TK_M_NAME:
                 return token_match_string(token, event->name);
         case TK_M_ENV:
-                if (sd_device_get_property_value(dev, (const char*) token->data, &val) < 0)
+                if (sd_device_get_property_value(dev, token->data, &val) < 0)
                         val = hashmap_get(properties_list, token->data);
 
                 return token_match_string(token, val);
@@ -1627,7 +1615,7 @@ static int udev_rule_apply_token_to_event(
         case TK_M_SYSCTL: {
                 _cleanup_free_ char *value = NULL;
 
-                (void) udev_event_apply_format(event, (const char*) token->data, buf, sizeof(buf), false);
+                (void) udev_event_apply_format(event, token->data, buf, sizeof(buf), false);
                 r = sysctl_read(sysctl_normalize(buf), &value);
                 if (r < 0 && r != -ENOENT)
                         return log_rule_error_errno(dev, rules, r, "Failed to read sysctl '%s': %m", buf);
@@ -1954,7 +1942,7 @@ static int udev_rule_apply_token_to_event(
                 _cleanup_free_ char *name = NULL, *label = NULL;
                 char label_str[UTIL_LINE_SIZE] = {};
 
-                name = strdup((const char*) token->data);
+                name = strdup(token->data);
                 if (!name)
                         return log_oom();
 
@@ -1981,7 +1969,7 @@ static int udev_rule_apply_token_to_event(
                 break;
         }
         case TK_A_ENV: {
-                const char *name = (const char*) token->data;
+                const char *name = token->data;
                 char value_new[UTIL_NAME_SIZE], *p = value_new;
                 size_t l = sizeof(value_new);
 
@@ -2017,7 +2005,7 @@ static int udev_rule_apply_token_to_event(
                 if (token->op == OP_REMOVE)
                         device_remove_tag(dev, buf);
                 else {
-                        r = device_add_tag(dev, buf);
+                        r = device_add_tag(dev, buf, true);
                         if (r < 0)
                                 return log_rule_error_errno(dev, rules, r, "Failed to add tag '%s': %m", buf);
                 }
@@ -2038,7 +2026,7 @@ static int udev_rule_apply_token_to_event(
                 }
                 if (sd_device_get_devnum(dev, NULL) >= 0 &&
                     (sd_device_get_devname(dev, &val) < 0 ||
-                     !streq_ptr(buf, startswith(val, "/dev/")))) {
+                     !streq_ptr(buf, path_startswith(val, "/dev/")))) {
                         log_rule_error(dev, rules,
                                        "Kernel device nodes cannot be renamed, ignoring NAME=\"%s\"; please fix it.",
                                        token->value);
@@ -2094,7 +2082,7 @@ static int udev_rule_apply_token_to_event(
                 break;
         }
         case TK_A_ATTR: {
-                const char *key_name = (const char*) token->data;
+                const char *key_name = token->data;
                 char value[UTIL_NAME_SIZE];
 
                 if (util_resolve_subsys_kernel(key_name, buf, sizeof(buf), false) < 0 &&
@@ -2117,7 +2105,7 @@ static int udev_rule_apply_token_to_event(
         case TK_A_SYSCTL: {
                 char value[UTIL_NAME_SIZE];
 
-                (void) udev_event_apply_format(event, (const char*) token->data, buf, sizeof(buf), false);
+                (void) udev_event_apply_format(event, token->data, buf, sizeof(buf), false);
                 (void) udev_event_apply_format(event, token->value, value, sizeof(value), false);
                 sysctl_normalize(buf);
                 log_rule_debug(dev, rules, "SYSCTL '%s' writing '%s'", buf, value);
