@@ -158,6 +158,7 @@ BASICTOOLS=(
     cat
     chmod
     chown
+    chroot
     cmp
     cryptsetup
     cut
@@ -197,6 +198,7 @@ BASICTOOLS=(
     nproc
     pkill
     readlink
+    realpath
     rev
     rm
     rmdir
@@ -689,7 +691,7 @@ EOF
 #!/bin/bash
 set -e
 test -e /usr/lib/os-release
-echo bar > \${STATE_DIRECTORY}/foo
+echo bar >\${STATE_DIRECTORY}/foo
 cat /usr/lib/extension-release.d/extension-release.app0
 EOF
         chmod +x "$initdir/opt/script0.sh"
@@ -715,7 +717,7 @@ EOF
 #!/bin/bash
 set -e
 test -e /usr/lib/os-release
-echo baz > \${STATE_DIRECTORY}/foo
+echo baz >\${STATE_DIRECTORY}/foo
 cat /usr/lib/extension-release.d/extension-release.app2
 EOF
         chmod +x "$initdir/opt/script1.sh"
@@ -954,6 +956,8 @@ install_modules() {
 
     if get_bool "$LOOKS_LIKE_SUSE"; then
         instmods ext4
+        # for TEST-54-CREDS
+        instmods dmi-sysfs
     fi
 }
 
@@ -1147,7 +1151,6 @@ install_debian_systemd() {
 }
 
 install_suse_systemd() {
-    local testsdir=/usr/lib/systemd/tests
     local pkgs
 
     dinfo "Install SUSE systemd"
@@ -1158,6 +1161,9 @@ install_suse_systemd() {
         systemd-coredump
         systemd-experimental
         systemd-journal-remote
+        # Since commit fb6f25d7b979134a, systemd-resolved, which is shipped by
+        # systemd-network sub-package on openSUSE, has its own testsuite.
+        systemd-network
         systemd-portable
         udev
     )
@@ -1173,15 +1179,21 @@ install_suse_systemd() {
         done < <(rpm -ql "$p")
     done
 
-    # we only need testsdata dir as well as the unit tests (for
-    # TEST-02-UNITTESTS) in the image.
-    dinfo "Install unit tests and testdata directory"
+    # Embed the files needed by the extended testsuite at runtime. Also include
+    # the unit tests needed by TEST-02-UNITTESTS. This is mostly equivalent to
+    # what `ninja install` does for the tests when '-Dinstall-tests=true'.
+    #
+    # Why? openSUSE ships a package named 'systemd-testsuite' which contains
+    # the minimal set of files that allows to run the testsuite on the host (as
+    # long as it runs an equivalent version of systemd) getting rid of the
+    # hassles of fetching, configuring, building the source code.
+    dinfo "Install the files needed by the tests at runtime"
+    image_install "${SOURCE_DIR}"/test-*
+    inst_recursive "${SOURCE_DIR}/testdata"
+    inst_recursive "${SOURCE_DIR}/manual"
 
-    mkdir -p "$initdir/$testsdir"
-    cp "$testsdir"/test-* "$initdir/$testsdir/"
-    cp -a "$testsdir/testdata" "$initdir/$testsdir/"
-
-    # On openSUSE, these dirs are not created at package install for now on.
+    # On openSUSE, this directory is not created at package install, at least
+    # for now.
     mkdir -p "$initdir/var/log/journal/remote"
 }
 
@@ -1275,7 +1287,7 @@ install_missing_libraries() {
     local lib path
     # A number of dependencies is now optional via dlopen, so the install
     # script will not pick them up, since it looks at linkage.
-    for lib in libcryptsetup libidn libidn2 pwquality libqrencode tss2-esys tss2-rc tss2-mu tss2-tcti-device libfido2 libbpf libelf libdw xkbcommon; do
+    for lib in libcryptsetup libidn libidn2 pwquality libqrencode tss2-esys tss2-rc tss2-mu tss2-tcti-device libfido2 libbpf libelf libdw xkbcommon p11-kit-1; do
         ddebug "Searching for $lib via pkg-config"
         if pkg-config --exists "$lib"; then
                 path="$(pkg-config --variable=libdir "$lib")"
@@ -1286,6 +1298,10 @@ install_missing_libraries() {
 
                 if ! [[ ${lib} =~ ^lib ]]; then
                         lib="lib${lib}"
+                fi
+                # p11-kit-1's .so doesn't have the API level in the name
+                if [[ ${lib} =~ p11-kit-1$ ]]; then
+                        lib="libp11-kit"
                 fi
                 # Some pkg-config files are broken and give out the wrong paths
                 # (eg: libcryptsetup), so just ignore them
@@ -1309,6 +1325,11 @@ install_missing_libraries() {
     inst_simple "${path}/engines-3/capi.so" || true
     inst_simple "${path}/engines-3/loader_attic.so" || true
     inst_simple "${path}/engines-3/padlock.so" || true
+
+    # Binaries from mtools depend on the gconv modules to translate between codepages. Because there's no
+    # pkg-config file for these, we copy every gconv/ directory we can find in /usr/lib and /usr/lib64.
+    # shellcheck disable=SC2046
+    inst_recursive $(find /usr/lib* -name gconv 2>/dev/null)
 }
 
 cleanup_loopdev() {
@@ -1328,7 +1349,7 @@ create_empty_image() {
     fi
 
     # Partition sizes are in MiBs
-    local root_size=500
+    local root_size=1000
     local data_size=50
     if ! get_bool "$NO_BUILD"; then
         if meson configure "${BUILD_DIR:?}" | grep 'static-lib\|standalone-binaries' | awk '{ print $2 }' | grep -q 'true'; then
@@ -1344,6 +1365,9 @@ create_empty_image() {
     if ! get_bool "$STRIP_BINARIES"; then
         root_size=$((4 * root_size))
         data_size=$((2 * data_size))
+    fi
+    if [ "$IMAGE_NAME" = "repart" ]; then
+        root_size=$((root_size+=1000))
     fi
 
     echo "Setting up ${IMAGE_PUBLIC:?} (${root_size} MB)"
@@ -1908,6 +1932,21 @@ install_dbus() {
     </policy>
 </busconfig>
 EOF
+
+    # If we run without KVM, bump the service start timeout
+    if ! get_bool "$QEMU_KVM"; then
+        cat >"$initdir/etc/dbus-1/system.d/service.timeout.conf" <<EOF
+<?xml version="1.0"?>
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+        "https://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+    <limit name="service_start_timeout">60000</limit>
+</busconfig>
+EOF
+        # Bump the client-side timeout in sd-bus as well
+        mkdir -p "$initdir/etc/systemd/system.conf.d"
+        echo -e '[Manager]\nDefaultEnvironment=SYSTEMD_BUS_TIMEOUT=60' >"$initdir/etc/systemd/system.conf.d/bus-timeout.conf"
+    fi
 }
 
 install_user_dbus() {
@@ -1988,21 +2027,27 @@ install_locales() {
         inst /usr/share/i18n/SUPPORTED || :
         inst_recursive /usr/share/i18n/charmaps
         inst_recursive /usr/share/i18n/locales
-        inst_recursive /usr/share/locale/en
-        inst_recursive /usr/share/locale/en_*
+        inst_recursive /usr/share/locale/en*
+        inst_recursive /usr/share/locale/de*
+        image_install /usr/share/locale/locale.alias
+        # locale-gen might either generate each locale separately or merge them
+        # into a single archive
+        if ! (inst_recursive /usr/lib/locale/C.*8 /usr/lib/locale/en_*8 ||
+              image_install /usr/lib/locale/locale-archive); then
+            dfatal "Failed to install required locales"
+            exit 1
+        fi
+    else
+        inst_recursive /usr/lib/locale/C.*8 /usr/lib/locale/en_*8
     fi
-
-    inst_recursive /usr/lib/locale/C.utf8
-    inst_recursive /usr/lib/locale/C.UTF-8
-    inst_recursive /usr/lib/locale/en_*.utf8
-    inst_recursive /usr/lib/locale/en_*.UTF-8
 }
 
 # shellcheck disable=SC2120
 install_keymaps() {
     local i p
     local -a prefix=(
-        "/usr"
+        "/usr/lib"
+        "/usr/share"
     )
 
     dinfo "Install console keymaps"
@@ -2011,7 +2056,7 @@ install_keymaps() {
             && [[ "$(meson configure "${BUILD_DIR:?}" | grep 'split-usr' | awk '{ print $2 }')" == "true" ]] \
             || [[ ! -L /lib ]]; then
         prefix+=(
-            ""
+            "/lib"
         )
     fi
 
@@ -2020,12 +2065,12 @@ install_keymaps() {
             # The first three paths may be deprecated.
             # It seems now the last three paths are used by many distributions.
             for i in \
-                "$p"/lib/kbd/keymaps/include/* \
-                "$p"/lib/kbd/keymaps/i386/include/* \
-                "$p"/lib/kbd/keymaps/i386/qwerty/us.* \
-                "$p"/lib/kbd/keymaps/legacy/include/* \
-                "$p"/lib/kbd/keymaps/legacy/i386/qwerty/us.* \
-                "$p"/lib/kbd/keymaps/xkb/us*; do
+                "$p"/kbd/keymaps/include/* \
+                "$p"/kbd/keymaps/i386/include/* \
+                "$p"/kbd/keymaps/i386/qwerty/us.* \
+                "$p"/kbd/keymaps/legacy/include/* \
+                "$p"/kbd/keymaps/legacy/i386/qwerty/us.* \
+                "$p"/kbd/keymaps/xkb/us*; do
                     [[ -f "$i" ]] || continue
                     inst "$i"
             done
@@ -2034,10 +2079,10 @@ install_keymaps() {
         # When it takes any argument, then install more keymaps.
         for p in "${prefix[@]}"; do
             for i in \
-                "$p"/lib/kbd/keymaps/include/* \
-                "$p"/lib/kbd/keymaps/i386/*/* \
-                "$p"/lib/kbd/keymaps/legacy/i386/*/* \
-                "$p"/lib/kbd/keymaps/xkb/*; do
+                "$p"/kbd/keymaps/include/* \
+                "$p"/kbd/keymaps/i386/*/* \
+                "$p"/kbd/keymaps/legacy/i386/*/* \
+                "$p"/kbd/keymaps/xkb/*; do
                     [[ -f "$i" ]] || continue
                     inst "$i"
             done
@@ -2596,8 +2641,9 @@ inst_binary() {
     # chown, getent, login, su, useradd, userdel - dlopen()s (not only) systemd's PAM modules
     # ls, stat - pulls in nss_systemd with certain options (like ls -l) when
     #            nsswitch.conf uses [SUCCESS=merge] (like on Arch Linux)
+    # delv, dig - pulls in nss_resolve if `resolve` is in nsswitch.conf
     # tar - called by machinectl in TEST-25
-    if get_bool "$IS_BUILT_WITH_ASAN" && [[ "$bin" =~ /(chown|getent|login|ls|stat|su|tar|useradd|userdel)$ ]]; then
+    if get_bool "$IS_BUILT_WITH_ASAN" && [[ "$bin" =~ /(chown|delv|dig|getent|login|ls|stat|su|tar|useradd|userdel)$ ]]; then
         wrap_binary=1
     fi
 
@@ -2773,6 +2819,10 @@ inst_recursive() {
     local p item
 
     for p in "$@"; do
+        # Make sure the source exists, as the process substitution below
+        # suppresses errors
+        stat "$p" >/dev/null || return 1
+
         while read -r item; do
             if [[ -d "$item" ]]; then
                 inst_dir "$item"

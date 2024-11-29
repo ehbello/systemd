@@ -38,7 +38,7 @@ static void test_xescape_full_one(bool eight_bits) {
                 if (i >= full_fit)
                         assert_se(streq(t, escaped));
                 else if (i >= 3) {
-                        /* We need up to four columns, so up to three three columns may be wasted */
+                        /* We need up to four columns, so up to three columns may be wasted */
                         assert_se(strlen(t) == i || strlen(t) == i - 1 || strlen(t) == i - 2 || strlen(t) == i - 3);
                         assert_se(strneq(t, escaped, i - 3) || strneq(t, escaped, i - 4) ||
                                   strneq(t, escaped, i - 5) || strneq(t, escaped, i - 6));
@@ -217,6 +217,22 @@ TEST(quote_command_line) {
                                     "true \"with a \\\"quote\\\"\"");
         test_quote_command_line_one(STRV_MAKE("true", "$dollar"),
                                     "true \"\\$dollar\"");
+}
+
+static void test_octescape_one(const char *s, const char *expected) {
+        _cleanup_free_ char *ret;
+
+        assert_se(ret = octescape(s, strlen_ptr(s)));
+        log_debug("octescape(\"%s\") → \"%s\" (expected: \"%s\")", strnull(s), ret, expected);
+        assert_se(streq(ret, expected));
+}
+
+TEST(octescape) {
+        test_octescape_one(NULL, "");
+        test_octescape_one("", "");
+        test_octescape_one("foo", "foo");
+        test_octescape_one("\"\\\"", "\\042\\134\\042");
+        test_octescape_one("\123\213\222", "\123\\213\\222");
 }
 
 DEFINE_TEST_MAIN(LOG_DEBUG);

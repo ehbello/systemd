@@ -13,7 +13,9 @@
 #include "device.h"
 #include "exit-status.h"
 #include "format-util.h"
+#include "fs-util.h"
 #include "fstab-util.h"
+#include "initrd-util.h"
 #include "libmount-util.h"
 #include "log.h"
 #include "manager.h"
@@ -26,6 +28,7 @@
 #include "process-util.h"
 #include "serialize.h"
 #include "special.h"
+#include "stat-util.h"
 #include "string-table.h"
 #include "string-util.h"
 #include "strv.h"
@@ -885,10 +888,10 @@ static int mount_spawn(Mount *m, ExecCommand *c, pid_t *_pid) {
 
         _cleanup_(exec_params_clear) ExecParameters exec_params = {
                 .flags     = EXEC_APPLY_SANDBOXING|EXEC_APPLY_CHROOT|EXEC_APPLY_TTY_STDIN,
-                .stdin_fd  = -1,
-                .stdout_fd = -1,
-                .stderr_fd = -1,
-                .exec_fd   = -1,
+                .stdin_fd  = -EBADF,
+                .stdout_fd = -EBADF,
+                .stderr_fd = -EBADF,
+                .exec_fd   = -EBADF,
         };
         pid_t pid;
         int r;
@@ -1073,6 +1076,7 @@ fail:
 static void mount_enter_mounting(Mount *m) {
         int r;
         MountParameters *p;
+        bool source_is_dir = true;
 
         assert(m);
 
@@ -1080,16 +1084,28 @@ static void mount_enter_mounting(Mount *m) {
         if (r < 0)
                 goto fail;
 
-        (void) mkdir_p_label(m->where, m->directory_mode);
+        p = get_mount_parameters_fragment(m);
+        if (p && mount_is_bind(p)) {
+                r = is_dir(p->what, /* follow = */ true);
+                if (r < 0 && r != -ENOENT)
+                        log_unit_info_errno(UNIT(m), r, "Failed to determine type of bind mount source '%s', ignoring: %m", p->what);
+                else if (r == 0)
+                        source_is_dir = false;
+        }
 
-        unit_warn_if_dir_nonempty(UNIT(m), m->where);
+        if (source_is_dir)
+                (void) mkdir_p_label(m->where, m->directory_mode);
+        else
+                (void) touch_file(m->where, /* parents = */ true, USEC_INFINITY, UID_INVALID, GID_INVALID, MODE_INVALID);
+
+        if (source_is_dir)
+                unit_warn_if_dir_nonempty(UNIT(m), m->where);
         unit_warn_leftover_processes(UNIT(m), unit_log_leftover_process_start);
 
         m->control_command_id = MOUNT_EXEC_MOUNT;
         m->control_command = m->exec_command + MOUNT_EXEC_MOUNT;
 
         /* Create the source directory for bind-mounts if needed */
-        p = get_mount_parameters_fragment(m);
         if (p && mount_is_bind(p)) {
                 r = mkdir_p_label(p->what, m->directory_mode);
                 /* mkdir_p_label() can return -EEXIST if the target path exists and is not a directory - which is
@@ -1908,6 +1924,7 @@ static void mount_enumerate(Manager *m) {
         mnt_init_debug(0);
 
         if (!m->mount_monitor) {
+                unsigned mount_rate_limit_burst = 5;
                 int fd;
 
                 m->mount_monitor = mnt_new_monitor();
@@ -1947,7 +1964,15 @@ static void mount_enumerate(Manager *m) {
                         goto fail;
                 }
 
-                r = sd_event_source_set_ratelimit(m->mount_event_source, 1 * USEC_PER_SEC, 5);
+                /* Let users override the default (5 in 1s), as it stalls the boot sequence on busy systems. */
+                const char *e = secure_getenv("SYSTEMD_DEFAULT_MOUNT_RATE_LIMIT_BURST");
+                if (e) {
+                        r = safe_atou(e, &mount_rate_limit_burst);
+                        if (r < 0)
+                                log_debug("Invalid value in $SYSTEMD_DEFAULT_MOUNT_RATE_LIMIT_BURST, ignoring: %s", e);
+                }
+
+                r = sd_event_source_set_ratelimit(m->mount_event_source, 1 * USEC_PER_SEC, mount_rate_limit_burst);
                 if (r < 0) {
                         log_error_errno(r, "Failed to enable rate limit for mount events: %m");
                         goto fail;

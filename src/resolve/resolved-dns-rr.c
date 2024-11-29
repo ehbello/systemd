@@ -1137,12 +1137,15 @@ const char *dns_resource_record_to_string(DnsResourceRecord *rr) {
                 break;
 
         default:
-                t = hexmem(rr->generic.data, rr->generic.data_size);
-                if (!t)
-                        return NULL;
-
                 /* Format as documented in RFC 3597, Section 5 */
-                r = asprintf(&s, "%s \\# %zu %s", k, rr->generic.data_size, t);
+                if (rr->generic.data_size == 0)
+                        r = asprintf(&s, "%s \\# 0", k);
+                else {
+                        t = hexmem(rr->generic.data, rr->generic.data_size);
+                        if (!t)
+                                return NULL;
+                        r = asprintf(&s, "%s \\# %zu %s", k, rr->generic.data_size, t);
+                }
                 if (r < 0)
                         return NULL;
                 break;
@@ -1765,36 +1768,30 @@ int dns_resource_record_get_cname_target(DnsResourceKey *key, DnsResourceRecord 
         return 0;
 }
 
-DnsTxtItem *dns_txt_item_free_all(DnsTxtItem *i) {
-        DnsTxtItem *n;
+DnsTxtItem *dns_txt_item_free_all(DnsTxtItem *first) {
+        LIST_FOREACH(items, i, first)
+                free(i);
 
-        if (!i)
-                return NULL;
-
-        n = i->items_next;
-
-        free(i);
-        return dns_txt_item_free_all(n);
+        return NULL;
 }
 
 bool dns_txt_item_equal(DnsTxtItem *a, DnsTxtItem *b) {
+        DnsTxtItem *bb = b;
 
         if (a == b)
                 return true;
 
-        if (!a != !b)
-                return false;
+        LIST_FOREACH(items, aa, a) {
+                if (!bb)
+                        return false;
 
-        if (!a)
-                return true;
+                if (memcmp_nn(aa->data, aa->length, bb->data, bb->length) != 0)
+                        return false;
 
-        if (a->length != b->length)
-                return false;
+                bb = bb->items_next;
+        }
 
-        if (memcmp(a->data, b->data, a->length) != 0)
-                return false;
-
-        return dns_txt_item_equal(a->items_next, b->items_next);
+        return !bb;
 }
 
 DnsTxtItem *dns_txt_item_copy(DnsTxtItem *first) {
@@ -1804,10 +1801,8 @@ DnsTxtItem *dns_txt_item_copy(DnsTxtItem *first) {
                 DnsTxtItem *j;
 
                 j = memdup(i, offsetof(DnsTxtItem, data) + i->length + 1);
-                if (!j) {
-                        dns_txt_item_free_all(copy);
-                        return NULL;
-                }
+                if (!j)
+                        return dns_txt_item_free_all(copy);
 
                 LIST_INSERT_AFTER(items, copy, end, j);
                 end = j;
@@ -1819,6 +1814,8 @@ DnsTxtItem *dns_txt_item_copy(DnsTxtItem *first) {
 int dns_txt_item_new_empty(DnsTxtItem **ret) {
         DnsTxtItem *i;
 
+        assert(ret);
+
         /* RFC 6763, section 6.1 suggests to treat
          * empty TXT RRs as equivalent to a TXT record
          * with a single empty string. */
@@ -1828,7 +1825,6 @@ int dns_txt_item_new_empty(DnsTxtItem **ret) {
                 return -ENOMEM;
 
         *ret = i;
-
         return 0;
 }
 
@@ -1865,7 +1861,6 @@ static int type_bitmap_to_json(Bitmap *b, JsonVariant **ret) {
         unsigned t;
         int r;
 
-        assert(b);
         assert(ret);
 
         BITMAP_FOREACH(t, b) {
@@ -1885,6 +1880,36 @@ static int type_bitmap_to_json(Bitmap *b, JsonVariant **ret) {
 
         *ret = TAKE_PTR(l);
         return 0;
+}
+
+static int txt_to_json(DnsTxtItem *items, JsonVariant **ret) {
+        JsonVariant **elements = NULL;
+        size_t n = 0;
+        int r;
+
+        assert(ret);
+
+        LIST_FOREACH(items, i, items) {
+                if (!GREEDY_REALLOC(elements, n + 1)) {
+                        r = -ENOMEM;
+                        goto finalize;
+                }
+
+                r = json_variant_new_octescape(elements + n, i->data, i->length);
+                if (r < 0)
+                        goto finalize;
+
+                n++;
+        }
+
+        r = json_variant_new_array(ret, elements, n);
+
+finalize:
+        for (size_t i = 0; i < n; i++)
+                json_variant_unref(elements[i]);
+
+        free(elements);
+        return r;
 }
 
 int dns_resource_record_to_json(DnsResourceRecord *rr, JsonVariant **ret) {
@@ -1929,23 +1954,9 @@ int dns_resource_record_to_json(DnsResourceRecord *rr, JsonVariant **ret) {
         case DNS_TYPE_TXT: {
                 _cleanup_(json_variant_unrefp) JsonVariant *l = NULL;
 
-                LIST_FOREACH(items, i, rr->txt.items) {
-                        _cleanup_(json_variant_unrefp) JsonVariant *b = NULL;
-
-                        r = json_variant_new_octescape(&b, i->data, i->length);
-                        if (r < 0)
-                                return r;
-
-                        r = json_variant_append_array(&l, b);
-                        if (r < 0)
-                                return r;
-                }
-
-                if (!l) {
-                        r = json_variant_new_array(&l, NULL, 0);
-                        if (r < 0)
-                                return r;
-                }
+                r = txt_to_json(rr->txt.items, &l);
+                if (r < 0)
+                        return r;
 
                 return json_build(ret,
                                   JSON_BUILD_OBJECT(

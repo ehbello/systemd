@@ -376,6 +376,8 @@ static int lease_parse_be32(const uint8_t *option, size_t len, be32_t *ret) {
 }
 
 static int lease_parse_string(const uint8_t *option, size_t len, char **ret) {
+        int r;
+
         assert(option);
         assert(ret);
 
@@ -388,12 +390,9 @@ static int lease_parse_string(const uint8_t *option, size_t len, char **ret) {
                  * One trailing NUL byte is OK, we don't mind. See:
                  * https://github.com/systemd/systemd/issues/1337
                  */
-                if (memchr(option, 0, len - 1))
-                        return -EINVAL;
-
-                string = memdup_suffix0((const char *) option, len);
-                if (!string)
-                        return -ENOMEM;
+                r = make_cstring((const char*) option, len, MAKE_CSTRING_ALLOW_TRAILING_NUL, &string);
+                if (r < 0)
+                        return r;
 
                 free_and_replace(*ret, string);
         }
@@ -995,7 +994,7 @@ int dhcp_lease_save(sd_dhcp_lease *lease, const char *lease_file) {
         r = sd_dhcp_lease_get_router(lease, &addresses);
         if (r > 0) {
                 fputs("ROUTER=", f);
-                serialize_in_addrs(f, addresses, r, false, NULL);
+                serialize_in_addrs(f, addresses, r, NULL, NULL);
                 fputc('\n', f);
         }
 
@@ -1030,21 +1029,21 @@ int dhcp_lease_save(sd_dhcp_lease *lease, const char *lease_file) {
         r = sd_dhcp_lease_get_dns(lease, &addresses);
         if (r > 0) {
                 fputs("DNS=", f);
-                serialize_in_addrs(f, addresses, r, false, NULL);
+                serialize_in_addrs(f, addresses, r, NULL, NULL);
                 fputc('\n', f);
         }
 
         r = sd_dhcp_lease_get_ntp(lease, &addresses);
         if (r > 0) {
                 fputs("NTP=", f);
-                serialize_in_addrs(f, addresses, r, false, NULL);
+                serialize_in_addrs(f, addresses, r, NULL, NULL);
                 fputc('\n', f);
         }
 
         r = sd_dhcp_lease_get_sip(lease, &addresses);
         if (r > 0) {
                 fputs("SIP=", f);
-                serialize_in_addrs(f, addresses, r, false, NULL);
+                serialize_in_addrs(f, addresses, r, NULL, NULL);
                 fputc('\n', f);
         }
 

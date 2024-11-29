@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #include "alloc-util.h"
+#include "build.h"
 #include "dissect-image.h"
 #include "id128-util.h"
 #include "log.h"
@@ -16,7 +17,6 @@
 #include "path-util.h"
 #include "pretty-print.h"
 #include "terminal-util.h"
-#include "util.h"
 
 static char *arg_root = NULL;
 static char *arg_image = NULL;
@@ -164,7 +164,7 @@ static int run(int argc, char *argv[]) {
                         return r;
 
                 etc_machine_id = prefix_roota(arg_root, "/etc/machine-id");
-                r = id128_read(etc_machine_id, ID128_PLAIN, &id);
+                r = id128_read(etc_machine_id, ID128_FORMAT_PLAIN, &id);
                 if (r < 0)
                         return log_error_errno(r, "Failed to read machine ID back: %m");
         } else {

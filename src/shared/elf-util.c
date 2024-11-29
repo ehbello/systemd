@@ -15,6 +15,7 @@
 #include "dlfcn-util.h"
 #include "elf-util.h"
 #include "errno-util.h"
+#include "escape.h"
 #include "fileio.h"
 #include "fd-util.h"
 #include "format-util.h"
@@ -24,7 +25,6 @@
 #include "process-util.h"
 #include "rlimit-util.h"
 #include "string-util.h"
-#include "util.h"
 
 #define FRAMES_MAX 64
 #define THREADS_MAX 64
@@ -397,8 +397,10 @@ static int parse_package_metadata(const char *name, JsonVariant *id_json, Elf *e
                         }
 
                         r = json_parse(payload, 0, &v, NULL, NULL);
-                        if (r < 0)
-                                return log_error_errno(r, "json_parse on %s failed: %m", payload);
+                        if (r < 0) {
+                                _cleanup_free_ char *esc = cescape(payload);
+                                return log_error_errno(r, "json_parse on \"%s\" failed: %m", strnull(esc));
+                        }
 
                         /* If we have a build-id, merge it in the same JSON object so that it appears all
                          * nicely together in the logs/metadata. */
@@ -742,7 +744,9 @@ static int parse_elf(int fd, const char *executable, char **ret, JsonVariant **r
 }
 
 int parse_elf_object(int fd, const char *executable, bool fork_disable_dump, char **ret, JsonVariant **ret_package_metadata) {
-        _cleanup_close_pair_ int error_pipe[2] = { -1, -1 }, return_pipe[2] = { -1, -1 }, json_pipe[2] = { -1, -1 };
+        _cleanup_close_pair_ int error_pipe[2] = PIPE_EBADF,
+                                 return_pipe[2] = PIPE_EBADF,
+                                 json_pipe[2] = PIPE_EBADF;
         _cleanup_(json_variant_unrefp) JsonVariant *package_metadata = NULL;
         _cleanup_free_ char *buf = NULL;
         int r;

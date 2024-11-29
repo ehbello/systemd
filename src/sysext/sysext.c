@@ -7,6 +7,7 @@
 #include <sys/mount.h>
 #include <unistd.h>
 
+#include "build.h"
 #include "capability-util.h"
 #include "chase-symlinks.h"
 #include "devnum-util.h"
@@ -20,6 +21,7 @@
 #include "format-table.h"
 #include "fs-util.h"
 #include "hashmap.h"
+#include "initrd-util.h"
 #include "log.h"
 #include "main-func.h"
 #include "missing_magic.h"
@@ -151,8 +153,12 @@ static int unmerge(void) {
 }
 
 static int verb_unmerge(int argc, char **argv, void *userdata) {
+        int r;
 
-        if (!have_effective_cap(CAP_SYS_ADMIN))
+        r = have_effective_cap(CAP_SYS_ADMIN);
+        if (r < 0)
+                return log_error_errno(r, "Failed to check if we have enough privileges: %m");
+        if (r == 0)
                 return log_error_errno(SYNTHETIC_ERRNO(EPERM), "Need to be privileged.");
 
         return unmerge();
@@ -520,7 +526,9 @@ static int merge_subprocess(Hashmap *images, const char *workspace) {
                                 DISSECT_IMAGE_GENERIC_ROOT |
                                 DISSECT_IMAGE_REQUIRE_ROOT |
                                 DISSECT_IMAGE_MOUNT_ROOT_ONLY |
-                                DISSECT_IMAGE_USR_NO_ROOT;
+                                DISSECT_IMAGE_USR_NO_ROOT |
+                                DISSECT_IMAGE_ADD_PARTITION_DEVICES |
+                                DISSECT_IMAGE_PIN_PARTITION_DEVICES;
 
                         r = verity_settings_load(&verity_settings, img->path, NULL, NULL);
                         if (r < 0)
@@ -532,6 +540,7 @@ static int merge_subprocess(Hashmap *images, const char *workspace) {
                         r = loop_device_make_by_path(
                                         img->path,
                                         O_RDONLY,
+                                        /* sector_size= */ UINT32_MAX,
                                         FLAGS_SET(flags, DISSECT_IMAGE_NO_PARTITION_TABLE) ? 0 : LO_FLAGS_PARTSCAN,
                                         LOCK_SH,
                                         &d);
@@ -757,7 +766,10 @@ static int verb_merge(int argc, char **argv, void *userdata) {
         _cleanup_(hashmap_freep) Hashmap *images = NULL;
         int r;
 
-        if (!have_effective_cap(CAP_SYS_ADMIN))
+        r = have_effective_cap(CAP_SYS_ADMIN);
+        if (r < 0)
+                return log_error_errno(r, "Failed to check if we have enough privileges: %m");
+        if (r == 0)
                 return log_error_errno(SYNTHETIC_ERRNO(EPERM), "Need to be privileged.");
 
         r = image_discover_and_read_metadata(&images);
@@ -792,7 +804,10 @@ static int verb_refresh(int argc, char **argv, void *userdata) {
         _cleanup_(hashmap_freep) Hashmap *images = NULL;
         int r;
 
-        if (!have_effective_cap(CAP_SYS_ADMIN))
+        r = have_effective_cap(CAP_SYS_ADMIN);
+        if (r < 0)
+                return log_error_errno(r, "Failed to check if we have enough privileges: %m");
+        if (r == 0)
                 return log_error_errno(SYNTHETIC_ERRNO(EPERM), "Need to be privileged.");
 
         r = image_discover_and_read_metadata(&images);

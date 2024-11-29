@@ -3196,7 +3196,7 @@ static int method_inhibit(sd_bus_message *message, void *userdata, sd_bus_error 
         _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
         const char *who, *why, *what, *mode;
         _cleanup_free_ char *id = NULL;
-        _cleanup_close_ int fifo_fd = -1;
+        _cleanup_close_ int fifo_fd = -EBADF;
         Manager *m = ASSERT_PTR(userdata);
         InhibitMode mm;
         InhibitWhat w;
@@ -3967,6 +3967,12 @@ int manager_start_scope(
                 return r;
 
         r = sd_bus_message_append(m, "(sv)", "PIDs", "au", 1, pid);
+        if (r < 0)
+                return r;
+
+        /* For login session scopes, if a process is OOM killed by the kernel, *don't* terminate the rest of
+           the scope */
+        r = sd_bus_message_append(m, "(sv)", "OOMPolicy", "s", "continue");
         if (r < 0)
                 return r;
 

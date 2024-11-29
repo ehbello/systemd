@@ -126,12 +126,13 @@ static void linux_efi_handover(EFI_HANDLE parent, uintptr_t kernel, BootParams *
 
 EFI_STATUS linux_exec_efi_handover(
                 EFI_HANDLE parent,
-                const char *cmdline, UINTN cmdline_len,
-                const void *linux_buffer, UINTN linux_length,
-                const void *initrd_buffer, UINTN initrd_length) {
+                const char16_t *cmdline,
+                const void *linux_buffer,
+                size_t linux_length,
+                const void *initrd_buffer,
+                size_t initrd_length) {
 
         assert(parent);
-        assert(cmdline || cmdline_len == 0);
         assert(linux_buffer);
         assert(initrd_buffer || initrd_length == 0);
 
@@ -140,28 +141,27 @@ EFI_STATUS linux_exec_efi_handover(
 
         const BootParams *image_params = (const BootParams *) linux_buffer;
         if (image_params->hdr.header != SETUP_MAGIC || image_params->hdr.boot_flag != BOOT_FLAG_MAGIC)
-                return log_error_status_stall(EFI_UNSUPPORTED, u"Unsupported kernel image.");
+                return log_error_status(EFI_UNSUPPORTED, "Unsupported kernel image.");
         if (image_params->hdr.version < SETUP_VERSION_2_11)
-                return log_error_status_stall(EFI_UNSUPPORTED, u"Kernel too old.");
+                return log_error_status(EFI_UNSUPPORTED, "Kernel too old.");
         if (!image_params->hdr.relocatable_kernel)
-                return log_error_status_stall(EFI_UNSUPPORTED, u"Kernel is not relocatable.");
+                return log_error_status(EFI_UNSUPPORTED, "Kernel is not relocatable.");
 
         /* The xloadflags were added in version 2.12+ of the boot protocol but the handover support predates
          * that, so we cannot safety-check this for 2.11. */
         if (image_params->hdr.version >= SETUP_VERSION_2_12 &&
             !FLAGS_SET(image_params->hdr.xloadflags, XLF_EFI_HANDOVER))
-                return log_error_status_stall(EFI_UNSUPPORTED, u"Kernel does not support EFI handover protocol.");
+                return log_error_status(EFI_UNSUPPORTED, "Kernel does not support EFI handover protocol.");
 
         bool can_4g = image_params->hdr.version >= SETUP_VERSION_2_12 &&
                         FLAGS_SET(image_params->hdr.xloadflags, XLF_CAN_BE_LOADED_ABOVE_4G);
 
         if (!can_4g && POINTER_TO_PHYSICAL_ADDRESS(linux_buffer) + linux_length > UINT32_MAX)
-                return log_error_status_stall(
+                return log_error_status(
                                 EFI_UNSUPPORTED,
-                                u"Unified kernel image was loaded above 4G, but kernel lacks support.");
+                                "Unified kernel image was loaded above 4G, but kernel lacks support.");
         if (!can_4g && POINTER_TO_PHYSICAL_ADDRESS(initrd_buffer) + initrd_length > UINT32_MAX)
-                return log_error_status_stall(
-                                EFI_UNSUPPORTED, u"Initrd is above 4G, but kernel lacks support.");
+                return log_error_status(EFI_UNSUPPORTED, "Initrd is above 4G, but kernel lacks support.");
 
         _cleanup_pages_ Pages boot_params_page = xmalloc_pages(
                         can_4g ? AllocateAnyPages : AllocateMaxAddress,
@@ -185,14 +185,20 @@ EFI_STATUS linux_exec_efi_handover(
 
         _cleanup_pages_ Pages cmdline_pages = {};
         if (cmdline) {
+                size_t len = MIN(strlen16(cmdline), image_params->hdr.cmdline_size);
+
                 cmdline_pages = xmalloc_pages(
                                 can_4g ? AllocateAnyPages : AllocateMaxAddress,
                                 EfiLoaderData,
-                                EFI_SIZE_TO_PAGES(cmdline_len + 1),
+                                EFI_SIZE_TO_PAGES(len + 1),
                                 CMDLINE_PTR_MAX);
 
-                memcpy(PHYSICAL_ADDRESS_TO_POINTER(cmdline_pages.addr), cmdline, cmdline_len);
-                ((char *) PHYSICAL_ADDRESS_TO_POINTER(cmdline_pages.addr))[cmdline_len] = 0;
+                /* Convert cmdline to ASCII. */
+                char *cmdline8 = PHYSICAL_ADDRESS_TO_POINTER(cmdline_pages.addr);
+                for (size_t i = 0; i < len; i++)
+                        cmdline8[i] = cmdline[i] <= 0x7E ? cmdline[i] : ' ';
+                cmdline8[len] = '\0';
+
                 boot_params->hdr.cmd_line_ptr = (uint32_t) cmdline_pages.addr;
                 boot_params->ext_cmd_line_ptr = cmdline_pages.addr >> 32;
                 assert(can_4g || cmdline_pages.addr <= CMDLINE_PTR_MAX);
@@ -203,6 +209,7 @@ EFI_STATUS linux_exec_efi_handover(
         boot_params->hdr.ramdisk_size = initrd_length;
         boot_params->ext_ramdisk_size = ((uint64_t) initrd_length) >> 32;
 
+        log_wait();
         linux_efi_handover(parent, (uintptr_t) linux_buffer, boot_params);
         return EFI_LOAD_ERROR;
 }
