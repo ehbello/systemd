@@ -11,7 +11,7 @@
 static int get_pcr_alg(const char **ret) {
         assert(ret);
 
-        FOREACH_STRING(alg, "sha256", "sha1") {
+        FOREACH_STRING(alg, "sha256", "sha384", "sha1") {
                 _cleanup_free_ char *p = NULL;
 
                 if (asprintf(&p, "/sys/class/tpm/tpm0/pcr-%s/0", alg) < 0)
@@ -96,7 +96,7 @@ int verb_pcrs(int argc, char *argv[], void *userdata) {
         const char *alg = NULL;
         int r;
 
-        if (tpm2_support() != TPM2_SUPPORT_FULL)
+        if (!tpm2_is_fully_supported())
                 log_notice("System lacks full TPM2 support, not showing PCR state.");
         else {
                 r = get_pcr_alg(&alg);

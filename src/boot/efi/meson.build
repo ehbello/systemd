@@ -63,13 +63,14 @@ foreach ctype : ['color-normal', 'color-entry', 'color-highlight', 'color-edit']
                 'EFI_' + c[1].strip().underscorify().to_upper()))
 endforeach
 
+efi_conf.set_quoted('PROJECT_VERSION', project_major_version)
+efi_conf.set_quoted('VERSION_TAG', version_tag)
+efi_conf.set('PROJECT_URL', conf.get('PROJECT_URL'))
+
 if meson.is_cross_build() and get_option('sbat-distro') == 'auto'
         warning('Auto detection of SBAT information not supported when cross-building, disabling SBAT.')
 elif get_option('sbat-distro') != ''
         efi_conf.set_quoted('SBAT_PROJECT', meson.project_name())
-        efi_conf.set_quoted('PROJECT_VERSION', meson.project_version().split('~')[0])
-        efi_conf.set_quoted('VERSION_TAG', version_tag)
-        efi_conf.set('PROJECT_URL', conf.get('PROJECT_URL'))
         if get_option('sbat-distro-generation') < 1
                 error('SBAT Distro Generation must be a positive integer')
         endif
@@ -253,11 +254,14 @@ endif
 ############################################################
 
 libefi_sources = files(
+        'chid.c',
         'console.c',
         'device-path-util.c',
         'devicetree.c',
         'drivers.c',
         'efi-string.c',
+        'efivars.c',
+        'export-vars.c',
         'graphics.c',
         'initrd.c',
         'log.c',
@@ -267,6 +271,7 @@ libefi_sources = files(
         'random-seed.c',
         'secure-boot.c',
         'shim.c',
+        'smbios.c',
         'ticks.c',
         'util.c',
         'vmm.c',
@@ -377,9 +382,17 @@ endforeach
 foreach efi_elf_binary : efi_elf_binaries
         name = efi_elf_binary.name()
         name += name.startswith('systemd-boot') ? '.efi' : '.efi.stub'
+
         # For the addon, given it's empty, we need to explicitly reserve space in the header to account for
         # the sections that ukify will add.
-        minimum_sections = name.endswith('.stub') ? '15' : '0'
+        if name.startswith('linux')
+                minimum_sections = get_option('efi-stub-extra-sections')
+        elif name.startswith('addon')
+                minimum_sections = get_option('efi-addon-extra-sections')
+        else
+                minimum_sections = 0
+        endif
+
         exe = custom_target(
                 name,
                 output : name,
@@ -389,12 +402,12 @@ foreach efi_elf_binary : efi_elf_binaries
                 install_tag : 'systemd-boot',
                 command : [
                         elf2efi_py,
-                        '--version-major=' + meson.project_version().split('~')[0],
-                        '--version-minor=0',
+                        '--version-major=' + project_major_version,
+                        '--version-minor=' + project_minor_version,
                         '--efi-major=1',
                         '--efi-minor=1',
                         '--subsystem=10',
-                        '--minimum-sections=' + minimum_sections,
+                        '--minimum-sections=@0@'.format(minimum_sections),
                         '--copy-sections=.sbat,.sdmagic,.osrel',
                         '@INPUT@',
                         '@OUTPUT@',

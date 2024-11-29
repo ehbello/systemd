@@ -2,10 +2,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 '''Test wrapper command for driving integration tests.
-
-Note: This is deliberately rough and only intended to drive existing tests
-with the expectation that as part of formally defining the API it will be tidy.
-
 '''
 
 import argparse
@@ -61,18 +57,39 @@ def main():
         print(f"SYSTEMD_SLOW_TESTS=1 not found in environment, skipping {args.name}", file=sys.stderr)
         exit(77)
 
+    if args.vm and bool(int(os.getenv("TEST_NO_QEMU", "0"))):
+        print(f"TEST_NO_QEMU=1, skipping {args.name}", file=sys.stderr)
+        exit(77)
+
+    for s in os.getenv("TEST_SKIP", "").split():
+        if s in args.name:
+            print(f"Skipping {args.name} due to TEST_SKIP", file=sys.stderr)
+            exit(77)
+
+    keep_journal = os.getenv("TEST_SAVE_JOURNAL", "fail")
+    shell = bool(int(os.getenv("TEST_SHELL", "0")))
+
+    if shell and not sys.stderr.isatty():
+        print(f"--interactive must be passed to meson test to use TEST_SHELL=1", file=sys.stderr)
+        exit(1)
+
     name = args.name + (f"-{i}" if (i := os.getenv("MESON_TEST_ITERATION")) else "")
 
     dropin = textwrap.dedent(
         """\
-        [Unit]
-        SuccessAction=exit
-        SuccessActionExitStatus=123
-
         [Service]
         StandardOutput=journal+console
         """
     )
+
+    if not shell:
+        dropin += textwrap.dedent(
+            f"""
+            [Unit]
+            SuccessAction=exit
+            SuccessActionExitStatus=123
+            """
+        )
 
     if os.getenv("TEST_MATCH_SUBTEST"):
         dropin += textwrap.dedent(
@@ -90,6 +107,7 @@ def main():
             """
         )
 
+    journal_file = None
     if not sys.stderr.isatty():
         dropin += textwrap.dedent(
             """
@@ -100,8 +118,13 @@ def main():
 
         journal_file = (args.meson_build_dir / (f"test/journal/{name}.journal")).absolute()
         journal_file.unlink(missing_ok=True)
-    else:
-        journal_file = None
+    elif not shell:
+        dropin += textwrap.dedent(
+            """
+            [Unit]
+            Wants=multi-user.target
+            """
+        )
 
     cmd = [
         args.mkosi,
@@ -126,18 +149,18 @@ def main():
         '--runtime-network=none',
         '--runtime-scratch=no',
         *args.mkosi_args,
-        '--append',
         '--qemu-firmware', args.firmware,
+        *(['--qemu-kvm', 'no'] if int(os.getenv("TEST_NO_KVM", "0")) else []),
         '--kernel-command-line-extra',
         ' '.join([
             'systemd.hostname=H',
             f"SYSTEMD_UNIT_PATH=/usr/lib/systemd/tests/testdata/{args.name}.units:/usr/lib/systemd/tests/testdata/units:",
-            f"systemd.unit={args.unit}",
+            *([f"systemd.unit={args.unit}"] if not shell else []),
             'systemd.mask=systemd-networkd-wait-online.service',
             *(
                 [
                     "systemd.mask=serial-getty@.service",
-                    "systemd.show_status=no",
+                    "systemd.show_status=error",
                     "systemd.crash_shell=0",
                     "systemd.crash_action=poweroff",
                 ]
@@ -146,17 +169,25 @@ def main():
             ),
         ]),
         '--credential', f"journal.storage={'persistent' if sys.stderr.isatty() else args.storage}",
+        *(['--runtime-build-sources=no'] if not sys.stderr.isatty() else []),
         'qemu' if args.vm or os.getuid() != 0 else 'boot',
     ]
 
     result = subprocess.run(cmd)
 
-    if result.returncode in (args.exit_code, 77):
-        # Do not keep journal files for tests that don't fail.
-        if journal_file:
-            journal_file.unlink(missing_ok=True)
+    # On Debian/Ubuntu we get a lot of random QEMU crashes. Retry once, and then skip if it fails again.
+    if args.vm and result.returncode == 247 and args.exit_code != 247:
+        journal_file.unlink(missing_ok=True)
+        result = subprocess.run(cmd)
+        if args.vm and result.returncode == 247 and args.exit_code != 247:
+            print(f"Test {args.name} failed due to QEMU crash (error 247), ignoring", file=sys.stderr)
+            exit(77)
 
-        exit(0 if result.returncode == args.exit_code else 77)
+    if journal_file and (keep_journal == "0" or (result.returncode in (args.exit_code, 77) and keep_journal == "fail")):
+        journal_file.unlink(missing_ok=True)
+
+    if shell or result.returncode in (args.exit_code, 77):
+        exit(0 if shell or result.returncode == args.exit_code else 77)
 
     if journal_file:
         ops = []
@@ -176,9 +207,8 @@ def main():
                     text=True,
                 ).stdout
             )
-            images = {image["Image"]: image for image in j["Images"]}
-            distribution = images["system"]["Distribution"]
-            release = images["system"]["Release"]
+            distribution = j["Images"][-1]["Distribution"]
+            release = j["Images"][-1]["Release"]
             artifact = f"ci-mkosi-{id}-{iteration}-{distribution}-{release}-failed-test-journals"
             ops += [f"gh run download {id} --name {artifact} -D ci/{artifact}"]
             journal_file = Path(f"ci/{artifact}/test/journal/{name}.journal")

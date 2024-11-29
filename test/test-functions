@@ -84,14 +84,12 @@ add_at_exit_handler() {
 }
 
 # Decide if we can (and want to) run qemu with KVM acceleration.
-# Check if nested KVM is explicitly enabled (TEST_NESTED_KVM). If not,
-# check if it's not explicitly disabled (TEST_NO_KVM) and we're not already
-# running under KVM. If these conditions are met, enable KVM (and possibly
-# nested KVM), otherwise disable it.
-if get_bool "${TEST_NESTED_KVM:=}" || (! get_bool "${TEST_NO_KVM:=}" && ! systemd-detect-virt -qv); then
-    QEMU_KVM=yes
-else
+# Check if KVM is not explicitly disabled (TEST_NO_KVM), otherwise
+# enable KVM (and possibly nested KVM).
+if get_bool "${TEST_NO_KVM:=}"; then
     QEMU_KVM=no
+else
+    QEMU_KVM=yes
 fi
 
 if ! ROOTLIBDIR=$(pkg-config --variable=systemdutildir systemd); then
@@ -208,11 +206,12 @@ BASICTOOLS=(
     mount
     mountpoint
     mv
-    nc
+    ncat
     nproc
     ping
     pkill
     ps
+    pwd
     readlink
     realpath
     rev
@@ -236,6 +235,7 @@ BASICTOOLS=(
     su
     sulogin
     sysctl
+    tac
     tail
     tar
     tee
@@ -570,7 +570,7 @@ run_qemu() {
         ${TEST_MATCH_TESTCASE:+"systemd.setenv=TEST_MATCH_TESTCASE=$TEST_MATCH_TESTCASE"}
     )
 
-    if ! get_bool "$INTERACTIVE_DEBUG" && ! get_bool "$TEST_SKIP_SHUTDOWN"; then
+    if ! get_bool "$TEST_SHELL" && ! get_bool "$TEST_SKIP_SHUTDOWN"; then
         kernel_params+=(
             "panic=1"
             "softlockup_panic=1"
@@ -664,7 +664,7 @@ run_nspawn() {
         ${TEST_MATCH_TESTCASE:+"systemd.setenv=TEST_MATCH_TESTCASE=$TEST_MATCH_TESTCASE"}
     )
 
-    if get_bool "$INTERACTIVE_DEBUG"; then
+    if get_bool "$TEST_SHELL"; then
         nspawn_options+=("--console=interactive")
     elif ! get_bool "$TEST_SKIP_SHUTDOWN"; then
         kernel_params+=("systemd.wants=end.service")
@@ -730,7 +730,9 @@ install_verity_minimal() {
             cat
             echo
             grep
+            ls
             mount
+            mountpoint
             sleep
             touch
         )
@@ -1238,7 +1240,7 @@ install_package_file() {
     # in the whole python stack in a very questionable state, making the tests fail.
     # And given we're trying to transition to mkosi-based images anyway I'm not even
     # going to bother
-    [[ "$file" =~ /tests/unit-tests/.*.py$ ]] && return 0
+    [[ "$file" =~ /tests/.*.py$ ]] && return 0
     # If the current file is a directory, create it with the original
     # mode; if it's a symlink to a directory, copy it as-is
     if [[ -d "$file" ]]; then
@@ -1453,10 +1455,31 @@ install_missing_libraries() {
         [[ -e "$libgcc_s" ]] && inst_library "$libgcc_s"
     done < <(ldconfig -p | awk '/\/libgcc_s.so.1$/ { print $4 }')
 
-    local lib path
+    local lib path libs
     # A number of dependencies is now optional via dlopen, so the install
     # script will not pick them up, since it looks at linkage.
-    for lib in libcryptsetup libidn libidn2 pwquality libqrencode tss2-esys tss2-rc tss2-mu tss2-tcti-device libfido2 libbpf libelf libdw xkbcommon p11-kit-1 libarchive libgcrypt libkmod; do
+    libs=(
+        libarchive
+        libbpf
+        libcryptsetup
+        libdw
+        libelf
+        libfido2
+        libgcrypt
+        libidn
+        libidn2
+        libip4tc
+        libkmod
+        libqrencode
+        p11-kit-1
+        pwquality
+        tss2-esys
+        tss2-mu
+        tss2-rc
+        tss2-tcti-device
+        xkbcommon
+    )
+    for lib in "${libs[@]}"; do
         ddebug "Searching for $lib via pkg-config"
         if pkg-config --exists "$lib"; then
                 path="$(pkg-config --variable=libdir "$lib")"
@@ -1860,74 +1883,6 @@ check_result_qemu() {
     return $ret
 }
 
-check_result_nspawn_unittests() {
-    local workspace="${1:?}"
-    local ret=1
-
-    [[ -e "$workspace/testok" ]] && ret=0
-
-    if [[ -s "$workspace/failed" ]]; then
-        ret=$((ret + 1))
-        echo "=== Failed test log ==="
-        cat "$workspace/failed"
-    else
-        if [[ -s "$workspace/skipped" ]]; then
-            echo "=== Skipped test log =="
-            cat "$workspace/skipped"
-            # We might have only skipped tests - that should not fail the job
-            ret=0
-        fi
-        if [[ -s "$workspace/testok" ]]; then
-            echo "=== Passed tests ==="
-            cat "$workspace/testok"
-        fi
-    fi
-
-    get_bool "${TIMED_OUT:=}" && ret=1
-    check_coverage_reports "$workspace" || ret=5
-
-    save_journal "$workspace/var/log/journal" $ret
-    echo "${JOURNAL_LIST:-"No journals were saved"}"
-
-    _umount_dir "${initdir:?}"
-
-    return $ret
-}
-
-check_result_qemu_unittests() {
-    local ret=1
-
-    mount_initdir
-    [[ -e "${initdir:?}/testok" ]] && ret=0
-
-    if [[ -s "$initdir/failed" ]]; then
-        ret=$((ret + 1))
-        echo "=== Failed test log ==="
-        cat "$initdir/failed"
-    else
-        if [[ -s "$initdir/skipped" ]]; then
-            echo "=== Skipped test log =="
-            cat "$initdir/skipped"
-            # We might have only skipped tests - that should not fail the job
-            ret=0
-        fi
-        if [[ -s "$initdir/testok" ]]; then
-            echo "=== Passed tests ==="
-            cat "$initdir/testok"
-        fi
-    fi
-
-    get_bool "${TIMED_OUT:=}" && ret=1
-    check_coverage_reports "$initdir" || ret=5
-
-    save_journal "$initdir/var/log/journal" $ret
-    echo "${JOURNAL_LIST:-"No journals were saved"}"
-
-    _umount_dir "$initdir"
-
-    return $ret
-}
-
 create_rc_local() {
     dinfo "Create rc.local"
     mkdir -p "${initdir:?}/etc/rc.d"
@@ -2015,6 +1970,7 @@ EOF
 install_config_files() {
     dinfo "Install config files"
     inst /etc/sysconfig/init || :
+    inst /etc/hosts
     inst /etc/passwd
     inst /etc/shadow
     inst_any /etc/login.defs /usr/etc/login.defs
@@ -2051,7 +2007,7 @@ install_debug_tools() {
     dinfo "Install debug tools"
     image_install -o "${DEBUGTOOLS[@]}"
 
-    if get_bool "$INTERACTIVE_DEBUG"; then
+    if get_bool "$TEST_SHELL"; then
         # Set default TERM from vt220 to linux, so at least basic key shortcuts work
         local getty_override="${initdir:?}/etc/systemd/system/serial-getty@.service.d"
         mkdir -p "$getty_override"
@@ -2302,8 +2258,6 @@ install_zoneinfo() {
     inst_any /usr/share/zoneinfo/Europe/Kyiv
     inst_any /usr/share/zoneinfo/Pacific/Auckland
     inst_any /usr/share/zoneinfo/Pacific/Honolulu
-    inst_any /usr/share/zoneinfo/CET
-    inst_any /usr/share/zoneinfo/EET
     inst_any /usr/share/zoneinfo/UTC
 }
 
@@ -3027,6 +2981,8 @@ inst_recursive() {
         while read -r item; do
             if [[ -d "$item" ]]; then
                 inst_dir "$item"
+            elif [[ -L "$item" ]]; then
+                inst_symlink "$item"
             elif [[ -f "$item" ]]; then
                 inst_simple "$item"
             fi

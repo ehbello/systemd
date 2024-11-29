@@ -55,12 +55,21 @@ if [[ -z "${COVERAGE_BUILD_DIR:-}" ]]; then
         bash -xec "test ! -w /home; test ! -w /root; test ! -w /run/user; test ! -e $MARK"
     systemd-run --wait --pipe -p ProtectHome=read-only \
         bash -xec "test ! -w /home; test ! -w /root; test ! -w /run/user; test -e $MARK"
-    systemd-run --wait --pipe -p ProtectHome=tmpfs \
-        bash -xec "test -w /home; test -w /root; test -w /run/user; test ! -e $MARK"
+    systemd-run --wait --pipe -p ProtectHome=tmpfs -p TemporaryFileSystem=/home/foo \
+        bash -xec "test ! -w /home; test ! -w /root; test ! -w /run/user; test ! -e $MARK; test -w /home/foo"
     systemd-run --wait --pipe -p ProtectHome=no \
         bash -xec "test -w /home; test -w /root; test -w /run/user; test -e $MARK"
     rm -f "$MARK"
 fi
+
+systemd-run --wait --pipe -p PrivateMounts=true -p MountAPIVFS=yes \
+    bash -xec '[[ "$(findmnt --mountpoint /proc --noheadings -o FSTYPE)" == proc ]];
+               [[ "$$(findmnt --mountpoint /dev --noheadings -o FSTYPE)" =~ (devtmpfs|tmpfs) ]];
+               [[ "$$(findmnt --mountpoint /sys --noheadings -o FSTYPE)" =~ (sysfs|tmpfs) ]];
+               [[ "$$(findmnt --mountpoint /run --noheadings -o FSTYPE)" == tmpfs ]];
+               [[ "$$(findmnt --mountpoint /run --noheadings -o VFS-OPTIONS)" =~ rw ]];
+               [[ "$$(findmnt --mountpoint /run --noheadings -o VFS-OPTIONS)" =~ nosuid ]];
+               [[ "$$(findmnt --mountpoint /run --noheadings -o VFS-OPTIONS)" =~ nodev ]]'
 
 if proc_supports_option "hidepid=off"; then
     systemd-run --wait --pipe -p ProtectProc=noaccess -p User=testuser \
@@ -186,27 +195,27 @@ if ! systemd-detect-virt -cq; then
         )
 
         # We should fail with EPERM when trying to bind to a socket not on the allow list
-        # (nc exits with 2 in that case)
+        # (ncat exits with 2 in that case)
         systemd-run --wait -p SuccessExitStatus="1 2" --pipe "${ARGUMENTS[@]}" \
-            bash -xec 'timeout 1s nc -l 127.0.0.1 9999; exit 42'
+            bash -xec 'timeout 1s ncat -l 127.0.0.1 9999; exit 42'
         systemd-run --wait -p SuccessExitStatus="1 2" --pipe "${ARGUMENTS[@]}" \
-            bash -xec 'timeout 1s nc -l ::1 9999; exit 42'
+            bash -xec 'timeout 1s ncat -l ::1 9999; exit 42'
         systemd-run --wait -p SuccessExitStatus="1 2" --pipe "${ARGUMENTS[@]}" \
-            bash -xec 'timeout 1s nc -6 -u -l ::1 9999; exit 42'
+            bash -xec 'timeout 1s ncat -6 -u -l ::1 9999; exit 42'
         systemd-run --wait -p SuccessExitStatus="1 2" --pipe "${ARGUMENTS[@]}" \
-            bash -xec 'timeout 1s nc -4 -l 127.0.0.1 6666; exit 42'
+            bash -xec 'timeout 1s ncat -4 -l 127.0.0.1 6666; exit 42'
         systemd-run --wait -p SuccessExitStatus="1 2" --pipe -p SocketBindDeny=any \
-            bash -xec 'timeout 1s nc -l 127.0.0.1 9999; exit 42'
+            bash -xec 'timeout 1s ncat -l 127.0.0.1 9999; exit 42'
         # Consequently, we should succeed when binding to a socket on the allow list
         # and keep listening on it until we're killed by `timeout` (EC 124)
         systemd-run --wait --pipe -p SuccessExitStatus=124 "${ARGUMENTS[@]}" \
-            bash -xec 'timeout 1s nc -4 -l 127.0.0.1 1234; exit 1'
+            bash -xec 'timeout 1s ncat -4 -l 127.0.0.1 1234; exit 1'
         systemd-run --wait --pipe -p SuccessExitStatus=124 "${ARGUMENTS[@]}" \
-            bash -xec 'timeout 1s nc -4 -u -l 127.0.0.1 5678; exit 1'
+            bash -xec 'timeout 1s ncat -4 -u -l 127.0.0.1 5678; exit 1'
         systemd-run --wait --pipe -p SuccessExitStatus=124 "${ARGUMENTS[@]}" \
-            bash -xec 'timeout 1s nc -6 -l ::1 1234; exit 1'
+            bash -xec 'timeout 1s ncat -6 -l ::1 1234; exit 1'
         systemd-run --wait --pipe -p SuccessExitStatus=124 "${ARGUMENTS[@]}" \
-            bash -xec 'timeout 1s nc -6 -l ::1 6666; exit 1'
+            bash -xec 'timeout 1s ncat -6 -l ::1 6666; exit 1'
     fi
 
     losetup -d "$LODEV"
@@ -338,6 +347,19 @@ if [[ ! -v ASAN_OPTIONS ]] && systemctl --version | grep "+BPF_FRAMEWORK" && ker
     (! systemd-run --wait --pipe -p RestrictFileSystems="~proc devtmpfs sysfs" ls /proc)
     (! systemd-run --wait --pipe -p RestrictFileSystems="~proc devtmpfs sysfs" ls /dev)
     (! systemd-run --wait --pipe -p RestrictFileSystems="~proc devtmpfs sysfs" ls /sys)
+fi
+
+if [[ ! -v ASAN_OPTIONS ]]; then
+    # Ensure DynamicUser=yes does not imply PrivateTmp=yes if TemporaryFileSystem=/tmp /var/tmp is set
+    systemd-run --unit test-07-dynamic-user-tmp.service \
+                --service-type=notify \
+                -p DynamicUser=yes \
+                -p NotifyAccess=all \
+                sh -c 'touch /tmp/a && touch /var/tmp/b && ! test -f /tmp/b && ! test -f /var/tmp/a && systemd-notify --ready && sleep infinity'
+    (! ls /tmp/systemd-private-"$(tr -d '-' < /proc/sys/kernel/random/boot_id)"-test-07-dynamic-user-tmp.service-* &>/dev/null)
+    (! ls /var/tmp/systemd-private-"$(tr -d '-' < /proc/sys/kernel/random/boot_id)"-test-07-dynamic-user-tmp.service-* &>/dev/null)
+    systemctl is-active test-07-dynamic-user-tmp.service
+    systemctl stop test-07-dynamic-user-tmp.service
 fi
 
 # Make sure we properly (de)serialize various string arrays, including whitespaces

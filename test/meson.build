@@ -142,9 +142,11 @@ endif
 ############################################################
 
 if install_tests
-        install_data('run-unit-tests.py',
-                     install_mode : 'rwxr-xr-x',
-                     install_dir : testsdir)
+        foreach script : ['integration-test-setup.sh', 'run-unit-tests.py']
+                install_data(script,
+                             install_mode : 'rwxr-xr-x',
+                             install_dir : testsdir)
+        endforeach
 endif
 
 ############################################################
@@ -374,6 +376,7 @@ foreach dirname : [
         'TEST-83-BTRFS',
         'TEST-84-STORAGETM',
         'TEST-85-NETWORK',
+        'TEST-86-MULTI-PROFILE-UKI',
 ]
         subdir(dirname)
 endforeach

@@ -122,12 +122,7 @@ TEST(cg_create) {
         assert_se(cg_kill_recursive(test_a, 0, 0, NULL, NULL, NULL) > 0);
         assert_se(cg_kill_recursive(test_b, 0, 0, NULL, NULL, NULL) == 0);
 
-        (void) cg_trim(SYSTEMD_CGROUP_CONTROLLER, test_b, false);
-
-        assert_se(cg_rmdir(SYSTEMD_CGROUP_CONTROLLER, test_b) == 0);
-        assert_se(cg_rmdir(SYSTEMD_CGROUP_CONTROLLER, test_a) < 0);
-        assert_se(cg_migrate_recursive(SYSTEMD_CGROUP_CONTROLLER, test_a, SYSTEMD_CGROUP_CONTROLLER, here, 0) > 0);
-        assert_se(cg_rmdir(SYSTEMD_CGROUP_CONTROLLER, test_a) == 0);
+        ASSERT_OK(cg_trim(SYSTEMD_CGROUP_CONTROLLER, test_b, true));
 }
 
 TEST(id) {
@@ -159,6 +154,8 @@ TEST(id) {
 
         if (ERRNO_IS_NEG_PRIVILEGE(fd2))
                 log_notice("Skipping open-by-cgroup-id test because lacking privs.");
+        else if (ERRNO_IS_NEG_NOT_SUPPORTED(fd2))
+                log_notice("Skipping open-by-cgroup-id test because syscall is missing or blocked.");
         else {
                 assert_se(fd2 >= 0);
 

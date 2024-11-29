@@ -249,6 +249,14 @@ mouse:usb:v04d9p0499:name:*:*
  MOUSE_DPI=800@125
 
 ##########################################
+# Glorious
+##########################################
+
+# Glorious Model O Minus
+mouse:usb:v258ap0036:name:Glorious Model O:*
+ MOUSE_DPI=400@1000 800@1000 *1600@1000 3200@1000
+
+##########################################
 # HandShoe Mouse
 ##########################################
 
@@ -301,6 +309,10 @@ mouse:usb:v047dp8018:name:Kensington Expert Wireless TB Mouse:*
 mouse:bluetooth:v047dp8019:name:Expert Wireless TB Mouse:*
  ID_INPUT_TRACKBALL=1
  MOUSE_DPI=400@125
+
+# Kensington SlimBlade Pro trackball (via Bluetooth)
+mouse:bluetooth:v047dp80d4:name:SlimBlade Pro:*
+ ID_INPUT_TRACKBALL=1
 
 ##########################################
 # Lenovo

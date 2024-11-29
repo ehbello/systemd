@@ -16,6 +16,7 @@
 #include "sd-messages.h"
 
 #include "alloc-util.h"
+#include "ansi-color.h"
 #include "argv-util.h"
 #include "env-util.h"
 #include "errno-util.h"
@@ -395,9 +396,10 @@ void log_forget_fds(void) {
         console_fd_is_tty = -1;
 }
 
-void log_set_max_level(int level) {
+int log_set_max_level(int level) {
         assert(level == LOG_NULL || LOG_PRI(level) == level);
 
+        int old = log_max_level;
         log_max_level = level;
 
         /* Also propagate max log level to libc's syslog(), just in case some other component loaded into our
@@ -410,6 +412,8 @@ void log_set_max_level(int level) {
 
         /* Ensure that our own LOG_NULL define maps sanely to the log mask */
         assert_cc(LOG_UPTO(LOG_NULL) == 0);
+
+        return old;
 }
 
 void log_set_facility(int facility) {
@@ -532,8 +536,8 @@ static int write_to_syslog(
         char header_priority[2 + DECIMAL_STR_MAX(int) + 1],
              header_time[64],
              header_pid[4 + DECIMAL_STR_MAX(pid_t) + 1];
-        time_t t;
         struct tm tm;
+        int r;
 
         if (syslog_fd < 0)
                 return 0;
@@ -543,9 +547,9 @@ static int write_to_syslog(
 
         xsprintf(header_priority, "<%i>", level);
 
-        t = (time_t) (now(CLOCK_REALTIME) / USEC_PER_SEC);
-        if (!localtime_r(&t, &tm))
-                return -EINVAL;
+        r = localtime_or_gmtime_usec(now(CLOCK_REALTIME), /* utc= */ false, &tm);
+        if (r < 0)
+                return r;
 
         if (strftime(header_time, sizeof(header_time), "%h %e %T ", &tm) <= 0)
                 return -EINVAL;
@@ -743,7 +747,7 @@ static int write_to_journal(
         if (LOG_PRI(level) > log_target_max_level[LOG_TARGET_JOURNAL])
                 return 0;
 
-        iovec_len = MIN(6 + _log_context_num_fields * 2, IOVEC_MAX);
+        iovec_len = MIN(6 + _log_context_num_fields * 3, IOVEC_MAX);
         iovec = newa(struct iovec, iovec_len);
 
         log_do_header(header, sizeof(header), level, error, file, line, func, object_field, object, extra_field, extra);
@@ -1095,7 +1099,7 @@ int log_struct_internal(
                         int r;
                         bool fallback = false;
 
-                        iovec_len = MIN(17 + _log_context_num_fields * 2, IOVEC_MAX);
+                        iovec_len = MIN(17 + _log_context_num_fields * 3, IOVEC_MAX);
                         iovec = newa(struct iovec, iovec_len);
 
                         /* If the journal is available do structured logging.
@@ -1192,7 +1196,7 @@ int log_struct_iovec_internal(
                 struct iovec *iovec;
                 size_t n = 0, iovec_len;
 
-                iovec_len = MIN(1 + n_input_iovec * 2 + _log_context_num_fields * 2, IOVEC_MAX);
+                iovec_len = MIN(1 + n_input_iovec * 2 + _log_context_num_fields * 3, IOVEC_MAX);
                 iovec = newa(struct iovec, iovec_len);
 
                 log_do_header(header, sizeof(header), level, error, file, line, func, NULL, NULL, NULL, NULL);
@@ -1675,6 +1679,7 @@ int log_syntax_invalid_utf8_internal(
                 const char *func,
                 const char *rvalue) {
 
+        PROTECT_ERRNO;
         _cleanup_free_ char *p = NULL;
 
         if (rvalue)
@@ -1683,6 +1688,44 @@ int log_syntax_invalid_utf8_internal(
         return log_syntax_internal(unit, level, config_file, config_line,
                                    SYNTHETIC_ERRNO(EINVAL), file, line, func,
                                    "String is not UTF-8 clean, ignoring assignment: %s", strna(p));
+}
+
+int log_syntax_parse_error_internal(
+                const char *unit,
+                const char *config_file,
+                unsigned config_line,
+                int error,
+                bool critical,
+                const char *file,
+                int line,
+                const char *func,
+                const char *lvalue,
+                const char *rvalue) {
+
+        PROTECT_ERRNO;
+        _cleanup_free_ char *escaped = NULL;
+
+        /* OOM is always handled as critical. */
+        if (ERRNO_VALUE(error) == ENOMEM)
+                return log_oom_internal(LOG_ERR, file, line, func);
+
+        if (rvalue && !utf8_is_valid(rvalue)) {
+                escaped = utf8_escape_invalid(rvalue);
+                if (!escaped)
+                        rvalue = "(oom)";
+                else
+                        rvalue = " (escaped)";
+        }
+
+        log_syntax_internal(unit, critical ? LOG_ERR : LOG_WARNING, config_file, config_line, error,
+                            file, line, func,
+                            "Failed to parse %s=%s%s%s%s%s",
+                            strna(lvalue), strempty(escaped), strempty(rvalue),
+                            critical ? "" : ", ignoring",
+                            error == 0 ? "." : ": ",
+                            error == 0 ? "" : STRERROR(error));
+
+        return critical ? -ERRNO_VALUE(error) : 0;
 }
 
 void log_set_upgrade_syslog_to_journal(bool b) {
@@ -1741,7 +1784,7 @@ void log_setup(void) {
                 log_show_color(true);
 }
 
-const char *_log_set_prefix(const char *prefix, bool force) {
+const char* _log_set_prefix(const char *prefix, bool force) {
         const char *old = log_prefix;
 
         if (prefix || force)

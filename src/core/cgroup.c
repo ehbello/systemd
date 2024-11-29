@@ -102,8 +102,9 @@ bool unit_has_startup_cgroup_constraints(Unit *u) {
                c->startup_memory_low_set;
 }
 
-bool unit_has_host_root_cgroup(Unit *u) {
+bool unit_has_host_root_cgroup(const Unit *u) {
         assert(u);
+        assert(u->manager);
 
         /* Returns whether this unit manages the root cgroup. This will return true if this unit is the root slice and
          * the manager manages the root cgroup. */
@@ -193,6 +194,9 @@ void cgroup_context_init(CGroupContext *c) {
                 .moom_swap = MANAGED_OOM_AUTO,
                 .moom_mem_pressure = MANAGED_OOM_AUTO,
                 .moom_preference = MANAGED_OOM_PREFERENCE_NONE,
+                /* The default duration value in oomd.conf will be used when
+                 * moom_mem_pressure_duration_usec is set to infinity. */
+                .moom_mem_pressure_duration_usec = USEC_INFINITY,
 
                 .memory_pressure_watch = _CGROUP_PRESSURE_WATCH_INVALID,
                 .memory_pressure_threshold_usec = USEC_INFINITY,
@@ -780,7 +784,7 @@ static char *format_cgroup_memory_limit_comparison(Unit *u, const char *property
         return buf;
 }
 
-const char *cgroup_device_permissions_to_string(CGroupDevicePermissions p) {
+const char* cgroup_device_permissions_to_string(CGroupDevicePermissions p) {
         static const char *table[_CGROUP_DEVICE_PERMISSIONS_MAX] = {
                 /* Lets simply define a table with every possible combination. As long as those are just 8 we
                  * can get away with it. If this ever grows to more we need to revisit this logic though. */
@@ -945,6 +949,10 @@ void cgroup_context_dump(Unit *u, FILE* f, const char *prefix) {
         if (c->memory_pressure_threshold_usec != USEC_INFINITY)
                 fprintf(f, "%sMemoryPressureThresholdSec: %s\n",
                         prefix, FORMAT_TIMESPAN(c->memory_pressure_threshold_usec, 1));
+
+        if (c->moom_mem_pressure_duration_usec != USEC_INFINITY)
+                fprintf(f, "%sManagedOOMMemoryPressureDurationSec: %s\n",
+                        prefix, FORMAT_TIMESPAN(c->moom_mem_pressure_duration_usec, 1));
 
         LIST_FOREACH(device_allow, a, c->device_allow)
                 /* strna() below should be redundant, for avoiding -Werror=format-overflow= error. See #30223. */
@@ -2615,7 +2623,7 @@ void unit_invalidate_cgroup_members_masks(Unit *u) {
                 unit_invalidate_cgroup_members_masks(slice);
 }
 
-const char *unit_get_realized_cgroup_path(Unit *u, CGroupMask mask) {
+const char* unit_get_realized_cgroup_path(Unit *u, CGroupMask mask) {
 
         /* Returns the realized cgroup path of the specified unit where all specified controllers are available. */
 
@@ -2685,7 +2693,7 @@ int unit_set_cgroup_path(Unit *u, const char *path) {
         if (crt && streq_ptr(crt->cgroup_path, path))
                 return 0;
 
-        unit_release_cgroup(u);
+        unit_release_cgroup(u, /* drop_cgroup_runtime = */ true);
 
         crt = unit_setup_cgroup_runtime(u);
         if (!crt)
@@ -3483,7 +3491,7 @@ int unit_realize_cgroup(Unit *u) {
         return unit_realize_cgroup_now(u, manager_state(u->manager));
 }
 
-void unit_release_cgroup(Unit *u) {
+void unit_release_cgroup(Unit *u, bool drop_cgroup_runtime) {
         assert(u);
 
         /* Forgets all cgroup details for this cgroup — but does *not* destroy the cgroup. This is hence OK to call
@@ -3514,7 +3522,8 @@ void unit_release_cgroup(Unit *u) {
                 crt->cgroup_memory_inotify_wd = -1;
         }
 
-        *(CGroupRuntime**) ((uint8_t*) u + UNIT_VTABLE(u)->cgroup_runtime_offset) = cgroup_runtime_free(crt);
+        if (drop_cgroup_runtime)
+                *(CGroupRuntime**) ((uint8_t*) u + UNIT_VTABLE(u)->cgroup_runtime_offset) = cgroup_runtime_free(crt);
 }
 
 int unit_cgroup_is_empty(Unit *u) {
@@ -3530,27 +3539,28 @@ int unit_cgroup_is_empty(Unit *u) {
 
         r = cg_is_empty_recursive(SYSTEMD_CGROUP_CONTROLLER, crt->cgroup_path);
         if (r < 0)
-                return log_unit_debug_errno(u, r, "Failed to determine whether cgroup %s is empty, ignoring: %m", empty_to_root(crt->cgroup_path));
-
+                log_unit_debug_errno(u, r, "Failed to determine whether cgroup %s is empty: %m", empty_to_root(crt->cgroup_path));
         return r;
 }
 
-bool unit_maybe_release_cgroup(Unit *u) {
+static bool unit_maybe_release_cgroup(Unit *u) {
         int r;
 
-        assert(u);
+        /* Releases the cgroup only if it is recursively empty.
+         * Returns true if the cgroup was released, false otherwise. */
 
-        CGroupRuntime *crt = unit_get_cgroup_runtime(u);
-        if (!crt || !crt->cgroup_path)
-                return true;
+        assert(u);
 
         /* Don't release the cgroup if there are still processes under it. If we get notified later when all
          * the processes exit (e.g. the processes were in D-state and exited after the unit was marked as
          * failed) we need the cgroup paths to continue to be tracked by the manager so they can be looked up
          * and cleaned up later. */
         r = unit_cgroup_is_empty(u);
-        if (r == 1) {
-                unit_release_cgroup(u);
+        if (r > 0) {
+                /* Do not free CGroupRuntime when called from unit_prune_cgroup. Various accounting data
+                 * we should keep, especially CPU usage and *_peak ones which would be shown even after
+                 * the unit stops. */
+                unit_release_cgroup(u, /* drop_cgroup_runtime = */ false);
                 return true;
         }
 
@@ -3558,8 +3568,8 @@ bool unit_maybe_release_cgroup(Unit *u) {
 }
 
 void unit_prune_cgroup(Unit *u) {
-        int r;
         bool is_root_slice;
+        int r;
 
         assert(u);
 
@@ -3568,11 +3578,16 @@ void unit_prune_cgroup(Unit *u) {
         if (!crt || !crt->cgroup_path)
                 return;
 
-        /* Cache the last CPU and memory usage values before we destroy the cgroup */
+        /* Cache the last resource usage values before we destroy the cgroup */
         (void) unit_get_cpu_usage(u, /* ret = */ NULL);
 
         for (CGroupMemoryAccountingMetric metric = 0; metric <= _CGROUP_MEMORY_ACCOUNTING_METRIC_CACHED_LAST; metric++)
                 (void) unit_get_memory_accounting(u, metric, /* ret = */ NULL);
+
+        /* All IO metrics are read at once from the underlying cgroup, so issue just a single call */
+        (void) unit_get_io_accounting(u, _CGROUP_IO_ACCOUNTING_METRIC_INVALID, /* ret = */ NULL);
+
+        /* We do not cache IP metrics here because the firewall objects are not freed with cgroups */
 
 #if BPF_FRAMEWORK
         (void) bpf_restrict_fs_cleanup(u); /* Remove cgroup from the global LSM BPF map */
@@ -3597,9 +3612,8 @@ void unit_prune_cgroup(Unit *u) {
         if (!unit_maybe_release_cgroup(u)) /* Returns true if the cgroup was released */
                 return;
 
-        crt = unit_get_cgroup_runtime(u); /* The above might have destroyed the runtime object, let's see if it's still there */
-        if (!crt)
-                return;
+        assert(crt == unit_get_cgroup_runtime(u));
+        assert(!crt->cgroup_path);
 
         crt->cgroup_realized = false;
         crt->cgroup_realized_mask = 0;
@@ -3786,7 +3800,7 @@ static int on_cgroup_empty_event(sd_event_source *s, void *userdata) {
 
         unit_add_to_gc_queue(u);
 
-        if (IN_SET(unit_active_state(u), UNIT_INACTIVE, UNIT_FAILED))
+        if (UNIT_IS_INACTIVE_OR_FAILED(unit_active_state(u)))
                 unit_prune_cgroup(u);
         else if (UNIT_VTABLE(u)->notify_cgroup_empty)
                 UNIT_VTABLE(u)->notify_cgroup_empty(u);
@@ -4042,12 +4056,8 @@ static int unit_check_cgroup_events(Unit *u) {
         /* Disregard freezer state changes due to operations not initiated by us.
          * See: https://github.com/systemd/systemd/pull/13512/files#r416469963 and
          *      https://github.com/systemd/systemd/pull/13512#issuecomment-573007207 */
-        if (values[1] && IN_SET(u->freezer_state, FREEZER_FREEZING, FREEZER_FREEZING_BY_PARENT, FREEZER_THAWING)) {
-                if (streq(values[1], "0"))
-                        unit_thawed(u);
-                else
-                        unit_frozen(u);
-        }
+        if (values[1] && IN_SET(u->freezer_state, FREEZER_FREEZING, FREEZER_FREEZING_BY_PARENT, FREEZER_THAWING))
+                unit_freezer_complete(u, streq(values[1], "0") ? FREEZER_RUNNING : FREEZER_FROZEN);
 
         free(values[0]);
         free(values[1]);
@@ -4268,7 +4278,7 @@ int manager_setup_cgroup(Manager *m) {
 
                 /* 6. And pin it, so that it cannot be unmounted */
                 safe_close(m->pin_cgroupfs_fd);
-                m->pin_cgroupfs_fd = open(path, O_RDONLY|O_CLOEXEC|O_DIRECTORY|O_NOCTTY|O_NONBLOCK);
+                m->pin_cgroupfs_fd = open(path, O_PATH|O_CLOEXEC|O_DIRECTORY);
                 if (m->pin_cgroupfs_fd < 0)
                         return log_error_errno(errno, "Failed to open pin file: %m");
 
@@ -4526,16 +4536,16 @@ int unit_get_memory_accounting(Unit *u, CGroupMemoryAccountingMetric metric, uin
         if (!UNIT_CGROUP_BOOL(u, memory_accounting))
                 return -ENODATA;
 
+        /* The root cgroup doesn't expose this information. */
+        if (unit_has_host_root_cgroup(u))
+                return -ENODATA;
+
         CGroupRuntime *crt = unit_get_cgroup_runtime(u);
         if (!crt)
                 return -ENODATA;
         if (!crt->cgroup_path)
                 /* If the cgroup is already gone, we try to find the last cached value. */
                 goto finish;
-
-        /* The root cgroup doesn't expose this information. */
-        if (unit_has_host_root_cgroup(u))
-                return -ENODATA;
 
         if (!FLAGS_SET(crt->cgroup_realized_mask, CGROUP_MASK_MEMORY))
                 return -ENODATA;
@@ -4592,15 +4602,14 @@ int unit_get_tasks_current(Unit *u, uint64_t *ret) {
         return cg_get_attribute_as_uint64("pids", crt->cgroup_path, "pids.current", ret);
 }
 
-static int unit_get_cpu_usage_raw(Unit *u, nsec_t *ret) {
-        uint64_t ns;
+static int unit_get_cpu_usage_raw(const Unit *u, const CGroupRuntime *crt, nsec_t *ret) {
         int r;
 
         assert(u);
+        assert(crt);
         assert(ret);
 
-        CGroupRuntime *crt = unit_get_cgroup_runtime(u);
-        if (!crt || !crt->cgroup_path)
+        if (!crt->cgroup_path)
                 return -ENODATA;
 
         /* The root cgroup doesn't expose this information, let's get it from /proc instead */
@@ -4614,25 +4623,24 @@ static int unit_get_cpu_usage_raw(Unit *u, nsec_t *ret) {
         r = cg_all_unified();
         if (r < 0)
                 return r;
-        if (r > 0) {
-                _cleanup_free_ char *val = NULL;
-                uint64_t us;
-
-                r = cg_get_keyed_attribute("cpu", crt->cgroup_path, "cpu.stat", STRV_MAKE("usage_usec"), &val);
-                if (IN_SET(r, -ENOENT, -ENXIO))
-                        return -ENODATA;
-                if (r < 0)
-                        return r;
-
-                r = safe_atou64(val, &us);
-                if (r < 0)
-                        return r;
-
-                ns = us * NSEC_PER_USEC;
-        } else
+        if (r == 0)
                 return cg_get_attribute_as_uint64("cpuacct", crt->cgroup_path, "cpuacct.usage", ret);
 
-        *ret = ns;
+        _cleanup_free_ char *val = NULL;
+        uint64_t us;
+
+        r = cg_get_keyed_attribute("cpu", crt->cgroup_path, "cpu.stat", STRV_MAKE("usage_usec"), &val);
+        if (IN_SET(r, -ENOENT, -ENXIO))
+                return -ENODATA;
+        if (r < 0)
+                return r;
+
+        r = safe_atou64(val, &us);
+        if (r < 0)
+                return r;
+
+        *ret = us * NSEC_PER_USEC;
+
         return 0;
 }
 
@@ -4646,14 +4654,14 @@ int unit_get_cpu_usage(Unit *u, nsec_t *ret) {
          * started. If the cgroup has been removed already, returns the last cached value. To cache the value, simply
          * call this function with a NULL return value. */
 
-        CGroupRuntime *crt = unit_get_cgroup_runtime(u);
-        if (!crt || !crt->cgroup_path)
-                return -ENODATA;
-
         if (!UNIT_CGROUP_BOOL(u, cpu_accounting))
                 return -ENODATA;
 
-        r = unit_get_cpu_usage_raw(u, &ns);
+        CGroupRuntime *crt = unit_get_cgroup_runtime(u);
+        if (!crt)
+                return -ENODATA;
+
+        r = unit_get_cpu_usage_raw(u, crt, &ns);
         if (r == -ENODATA && crt->cpu_usage_last != NSEC_INFINITY) {
                 /* If we can't get the CPU usage anymore (because the cgroup was already removed, for example), use our
                  * cached value. */
@@ -4694,7 +4702,7 @@ int unit_get_ip_accounting(
                 return -ENODATA;
 
         CGroupRuntime *crt = unit_get_cgroup_runtime(u);
-        if (!crt || !crt->cgroup_path)
+        if (!crt)
                 return -ENODATA;
 
         fd = IN_SET(metric, CGROUP_IP_INGRESS_BYTES, CGROUP_IP_INGRESS_PACKETS) ?
@@ -4770,22 +4778,27 @@ int unit_get_effective_limit(Unit *u, CGroupLimitType type, uint64_t *ret) {
         return 0;
 }
 
-static int unit_get_io_accounting_raw(Unit *u, uint64_t ret[static _CGROUP_IO_ACCOUNTING_METRIC_MAX]) {
-        static const char *const field_names[_CGROUP_IO_ACCOUNTING_METRIC_MAX] = {
+static int unit_get_io_accounting_raw(
+                const Unit *u,
+                const CGroupRuntime *crt,
+                uint64_t ret[static _CGROUP_IO_ACCOUNTING_METRIC_MAX]) {
+
+        static const char* const field_names[_CGROUP_IO_ACCOUNTING_METRIC_MAX] = {
                 [CGROUP_IO_READ_BYTES]       = "rbytes=",
                 [CGROUP_IO_WRITE_BYTES]      = "wbytes=",
                 [CGROUP_IO_READ_OPERATIONS]  = "rios=",
                 [CGROUP_IO_WRITE_OPERATIONS] = "wios=",
         };
+
         uint64_t acc[_CGROUP_IO_ACCOUNTING_METRIC_MAX] = {};
         _cleanup_free_ char *path = NULL;
         _cleanup_fclose_ FILE *f = NULL;
         int r;
 
         assert(u);
+        assert(crt);
 
-        CGroupRuntime *crt = unit_get_cgroup_runtime(u);
-        if (!crt || !crt->cgroup_path)
+        if (!crt->cgroup_path)
                 return -ENODATA;
 
         if (unit_has_host_root_cgroup(u))
@@ -4857,26 +4870,29 @@ static int unit_get_io_accounting_raw(Unit *u, uint64_t ret[static _CGROUP_IO_AC
 int unit_get_io_accounting(
                 Unit *u,
                 CGroupIOAccountingMetric metric,
-                bool allow_cache,
                 uint64_t *ret) {
 
         uint64_t raw[_CGROUP_IO_ACCOUNTING_METRIC_MAX];
         int r;
 
-        /* Retrieve an IO account parameter. This will subtract the counter when the unit was started. */
+        /*
+         * Retrieve an IO counter, subtracting the value of the counter value at the time the unit was started.
+         * If ret == NULL and metric == _<...>_INVALID, no return value is expected (refresh the caches only).
+         */
+
+        assert(u);
+        assert(metric >= 0 || (!ret && metric == _CGROUP_IO_ACCOUNTING_METRIC_INVALID));
+        assert(metric < _CGROUP_IO_ACCOUNTING_METRIC_MAX);
 
         if (!UNIT_CGROUP_BOOL(u, io_accounting))
                 return -ENODATA;
 
         CGroupRuntime *crt = unit_get_cgroup_runtime(u);
-        if (!crt || !crt->cgroup_path)
+        if (!crt)
                 return -ENODATA;
 
-        if (allow_cache && crt->io_accounting_last[metric] != UINT64_MAX)
-                goto done;
-
-        r = unit_get_io_accounting_raw(u, raw);
-        if (r == -ENODATA && crt->io_accounting_last[metric] != UINT64_MAX)
+        r = unit_get_io_accounting_raw(u, crt, raw);
+        if (r == -ENODATA && metric >= 0 && crt->io_accounting_last[metric] != UINT64_MAX)
                 goto done;
         if (r < 0)
                 return r;
@@ -4896,45 +4912,52 @@ done:
         return 0;
 }
 
-int unit_reset_cpu_accounting(Unit *u) {
+static int unit_reset_cpu_accounting(Unit *unit, CGroupRuntime *crt) {
         int r;
 
-        assert(u);
+        assert(crt);
 
-        CGroupRuntime *crt = unit_get_cgroup_runtime(u);
-        if (!crt || !crt->cgroup_path)
-                return 0;
-
+        crt->cpu_usage_base = 0;
         crt->cpu_usage_last = NSEC_INFINITY;
 
-        r = unit_get_cpu_usage_raw(u, &crt->cpu_usage_base);
-        if (r < 0) {
-                crt->cpu_usage_base = 0;
-                return r;
+        if (unit) {
+                r = unit_get_cpu_usage_raw(unit, crt, &crt->cpu_usage_base);
+                if (r < 0 && r != -ENODATA)
+                        return r;
         }
 
         return 0;
 }
 
-void unit_reset_memory_accounting_last(Unit *u) {
-        assert(u);
+static int unit_reset_io_accounting(Unit *unit, CGroupRuntime *crt) {
+        int r;
 
-        CGroupRuntime *crt = unit_get_cgroup_runtime(u);
-        if (!crt || !crt->cgroup_path)
-                return;
+        assert(crt);
+
+        zero(crt->io_accounting_base);
+        FOREACH_ELEMENT(i, crt->io_accounting_last)
+                *i = UINT64_MAX;
+
+        if (unit) {
+                r = unit_get_io_accounting_raw(unit, crt, crt->io_accounting_base);
+                if (r < 0 && r != -ENODATA)
+                        return r;
+        }
+
+        return 0;
+}
+
+static void cgroup_runtime_reset_memory_accounting_last(CGroupRuntime *crt) {
+        assert(crt);
 
         FOREACH_ELEMENT(i, crt->memory_accounting_last)
                 *i = UINT64_MAX;
 }
 
-int unit_reset_ip_accounting(Unit *u) {
+static int cgroup_runtime_reset_ip_accounting(CGroupRuntime *crt) {
         int r = 0;
 
-        assert(u);
-
-        CGroupRuntime *crt = unit_get_cgroup_runtime(u);
-        if (!crt || !crt->cgroup_path)
-                return 0;
+        assert(crt);
 
         if (crt->ip_accounting_ingress_map_fd >= 0)
                 RET_GATHER(r, bpf_firewall_reset_accounting(crt->ip_accounting_ingress_map_fd));
@@ -4947,46 +4970,19 @@ int unit_reset_ip_accounting(Unit *u) {
         return r;
 }
 
-void unit_reset_io_accounting_last(Unit *u) {
-        assert(u);
-
-        CGroupRuntime *crt = unit_get_cgroup_runtime(u);
-        if (!crt || !crt->cgroup_path)
-                return;
-
-        FOREACH_ARRAY(i, crt->io_accounting_last, _CGROUP_IO_ACCOUNTING_METRIC_MAX)
-                *i = UINT64_MAX;
-}
-
-int unit_reset_io_accounting(Unit *u) {
-        int r;
-
-        assert(u);
-
-        CGroupRuntime *crt = unit_get_cgroup_runtime(u);
-        if (!crt || !crt->cgroup_path)
-                return 0;
-
-        unit_reset_io_accounting_last(u);
-
-        r = unit_get_io_accounting_raw(u, crt->io_accounting_base);
-        if (r < 0) {
-                zero(crt->io_accounting_base);
-                return r;
-        }
-
-        return 0;
-}
-
 int unit_reset_accounting(Unit *u) {
         int r = 0;
 
         assert(u);
 
-        RET_GATHER(r, unit_reset_cpu_accounting(u));
-        RET_GATHER(r, unit_reset_io_accounting(u));
-        RET_GATHER(r, unit_reset_ip_accounting(u));
-        unit_reset_memory_accounting_last(u);
+        CGroupRuntime *crt = unit_get_cgroup_runtime(u);
+        if (!crt)
+                return 0;
+
+        cgroup_runtime_reset_memory_accounting_last(crt);
+        RET_GATHER(r, unit_reset_cpu_accounting(u, crt));
+        RET_GATHER(r, unit_reset_io_accounting(u, crt));
+        RET_GATHER(r, cgroup_runtime_reset_ip_accounting(crt));
 
         return r;
 }
@@ -5121,35 +5117,35 @@ static int unit_cgroup_freezer_kernel_state(Unit *u, FreezerState *ret) {
 
 int unit_cgroup_freezer_action(Unit *u, FreezerAction action) {
         _cleanup_free_ char *path = NULL;
-        FreezerState target, current, next;
+        FreezerState current, next, objective;
         int r;
 
         assert(u);
-        assert(IN_SET(action, FREEZER_FREEZE, FREEZER_PARENT_FREEZE,
-                              FREEZER_THAW, FREEZER_PARENT_THAW));
+        assert(action >= 0);
+        assert(action < _FREEZER_ACTION_MAX);
 
         if (!cg_freezer_supported())
                 return 0;
 
-        unit_next_freezer_state(u, action, &next, &target);
+        unit_next_freezer_state(u, action, &next, &objective);
 
         CGroupRuntime *crt = unit_get_cgroup_runtime(u);
-        if (!crt || !crt->cgroup_realized) {
+        if (!crt || !crt->cgroup_path)
                 /* No realized cgroup = nothing to freeze */
-                u->freezer_state = freezer_state_finish(next);
-                return 0;
-        }
+                goto skip;
 
         r = unit_cgroup_freezer_kernel_state(u, &current);
         if (r < 0)
                 return r;
 
-        if (current == target)
-                next = freezer_state_finish(next);
-        else if (IN_SET(next, FREEZER_FROZEN, FREEZER_FROZEN_BY_PARENT, FREEZER_RUNNING)) {
-                /* We're transitioning into a finished state, which implies that the cgroup's
-                 * current state already matches the target and thus we'd return 0. But, reality
-                 * shows otherwise. This indicates that our freezer_state tracking has diverged
+        if (current == objective)
+                goto skip;
+
+        if (next == freezer_state_finish(next)) {
+                /* We're directly transitioning into a finished state, which in theory means that
+                 * the cgroup's current state already matches the objective and thus we'd return 0.
+                 * But, reality shows otherwise (such case would have been handled by current == objective
+                 * branch above). This indicates that our freezer_state tracking has diverged
                  * from the real state of the cgroup, which can happen if someone meddles with the
                  * cgroup from underneath us. This really shouldn't happen during normal operation,
                  * though. So, let's warn about it and fix up the state to be valid */
@@ -5163,22 +5159,24 @@ int unit_cgroup_freezer_action(Unit *u, FreezerAction action) {
                         next = FREEZER_FREEZING_BY_PARENT;
                 else if (next == FREEZER_RUNNING)
                         next = FREEZER_THAWING;
+                else
+                        assert_not_reached();
         }
 
         r = cg_get_path(SYSTEMD_CGROUP_CONTROLLER, crt->cgroup_path, "cgroup.freeze", &path);
         if (r < 0)
                 return r;
 
-        log_unit_debug(u, "Unit freezer state was %s, now %s.",
-                       freezer_state_to_string(u->freezer_state),
-                       freezer_state_to_string(next));
-
-        r = write_string_file(path, one_zero(target == FREEZER_FROZEN), WRITE_STRING_FILE_DISABLE_BUFFER);
+        r = write_string_file(path, one_zero(objective == FREEZER_FROZEN), WRITE_STRING_FILE_DISABLE_BUFFER);
         if (r < 0)
                 return r;
 
-        u->freezer_state = next;
-        return target != current;
+        unit_set_freezer_state(u, next);
+        return 1; /* Wait for cgroup event before replying */
+
+skip:
+        unit_set_freezer_state(u, freezer_state_finish(next));
+        return 0;
 }
 
 int unit_get_cpuset(Unit *u, CPUSet *cpus, const char *name) {
@@ -5210,7 +5208,7 @@ int unit_get_cpuset(Unit *u, CPUSet *cpus, const char *name) {
         return parse_cpu_set_full(v, cpus, false, NULL, NULL, 0, NULL);
 }
 
-CGroupRuntime *cgroup_runtime_new(void) {
+CGroupRuntime* cgroup_runtime_new(void) {
         _cleanup_(cgroup_runtime_freep) CGroupRuntime *crt = NULL;
 
         crt = new(CGroupRuntime, 1);
@@ -5218,8 +5216,6 @@ CGroupRuntime *cgroup_runtime_new(void) {
                 return NULL;
 
         *crt = (CGroupRuntime) {
-                .cpu_usage_last = NSEC_INFINITY,
-
                 .cgroup_control_inotify_wd = -1,
                 .cgroup_memory_inotify_wd = -1,
 
@@ -5234,19 +5230,15 @@ CGroupRuntime *cgroup_runtime_new(void) {
                 .cgroup_invalidated_mask = _CGROUP_MASK_ALL,
         };
 
-        FOREACH_ELEMENT(i, crt->memory_accounting_last)
-                *i = UINT64_MAX;
-        FOREACH_ELEMENT(i, crt->io_accounting_base)
-                *i = UINT64_MAX;
-        FOREACH_ELEMENT(i, crt->io_accounting_last)
-                *i = UINT64_MAX;
-        FOREACH_ELEMENT(i, crt->ip_accounting_extra)
-                *i = UINT64_MAX;
+        unit_reset_cpu_accounting(/* unit = */ NULL, crt);
+        unit_reset_io_accounting(/* unit = */ NULL, crt);
+        cgroup_runtime_reset_memory_accounting_last(crt);
+        assert_se(cgroup_runtime_reset_ip_accounting(crt) >= 0);
 
         return TAKE_PTR(crt);
 }
 
-CGroupRuntime *cgroup_runtime_free(CGroupRuntime *crt) {
+CGroupRuntime* cgroup_runtime_free(CGroupRuntime *crt) {
         if (!crt)
                 return NULL;
 
@@ -5265,20 +5257,7 @@ CGroupRuntime *cgroup_runtime_free(CGroupRuntime *crt) {
 #endif
         fdset_free(crt->initial_restrict_ifaces_link_fds);
 
-        safe_close(crt->ipv4_allow_map_fd);
-        safe_close(crt->ipv6_allow_map_fd);
-        safe_close(crt->ipv4_deny_map_fd);
-        safe_close(crt->ipv6_deny_map_fd);
-
-        bpf_program_free(crt->ip_bpf_ingress);
-        bpf_program_free(crt->ip_bpf_ingress_installed);
-        bpf_program_free(crt->ip_bpf_egress);
-        bpf_program_free(crt->ip_bpf_egress_installed);
-
-        set_free(crt->ip_bpf_custom_ingress);
-        set_free(crt->ip_bpf_custom_ingress_installed);
-        set_free(crt->ip_bpf_custom_egress);
-        set_free(crt->ip_bpf_custom_egress_installed);
+        bpf_firewall_close(crt);
 
         free(crt->cgroup_path);
 
@@ -5635,13 +5614,13 @@ static const char* const cgroup_device_policy_table[_CGROUP_DEVICE_POLICY_MAX] =
 DEFINE_STRING_TABLE_LOOKUP(cgroup_device_policy, CGroupDevicePolicy);
 
 static const char* const cgroup_pressure_watch_table[_CGROUP_PRESSURE_WATCH_MAX] = {
-        [CGROUP_PRESSURE_WATCH_OFF]  = "off",
+        [CGROUP_PRESSURE_WATCH_NO]   = "no",
+        [CGROUP_PRESSURE_WATCH_YES]  = "yes",
         [CGROUP_PRESSURE_WATCH_AUTO] = "auto",
-        [CGROUP_PRESSURE_WATCH_ON]   = "on",
         [CGROUP_PRESSURE_WATCH_SKIP] = "skip",
 };
 
-DEFINE_STRING_TABLE_LOOKUP_WITH_BOOLEAN(cgroup_pressure_watch, CGroupPressureWatch, CGROUP_PRESSURE_WATCH_ON);
+DEFINE_STRING_TABLE_LOOKUP_WITH_BOOLEAN(cgroup_pressure_watch, CGroupPressureWatch, CGROUP_PRESSURE_WATCH_YES);
 
 static const char* const cgroup_ip_accounting_metric_table[_CGROUP_IP_ACCOUNTING_METRIC_MAX] = {
         [CGROUP_IP_INGRESS_BYTES]   = "IPIngressBytes",

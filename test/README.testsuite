@@ -4,7 +4,7 @@
 
 To run the integration tests with meson + mkosi, make sure you're running the
 latest version of mkosi. See
-[`docs/HACKING.md`](https://github.com/systemd/systemd/blob/main/test/README.md)
+[`docs/HACKING.md`](https://github.com/systemd/systemd/blob/main/docs/HACKING.md)
 for more specific details. Make sure `mkosi` is available in `$PATH` when
 reconfiguring meson to make sure it is picked up properly.
 
@@ -14,23 +14,52 @@ We also need to make sure the required meson options are enabled:
 $ meson setup --reconfigure build -Dremote=enabled
 ```
 
-Next, we can build the integration test image:
+To make sure `mkosi` doesn't try to build systemd from source during the image build
+process, you can add the following to `mkosi.local.conf`:
+
+```
+[Content]
+Environment=NO_BUILD=1
+```
+
+You might also want to use the `PackageDirectories=` or `Repositories=` option to provide
+mkosi with a directory or repository containing the systemd packages that should be installed
+instead. If the repository containing the systemd packages is not a builtin repository known
+by mkosi, you can use the `SandboxTrees=` option to write an extra repository definition
+to /etc which is used when building the image instead.
+
+Next, we can build the integration test image with meson:
 
 ```shell
 $ meson compile -C build mkosi
 ```
 
+By default, the `mkosi` meson target which builds the integration test image depends on
+other meson targets to build various systemd tools that are used to build the image to make
+sure they are up-to-date. If you instead want the already installed systemd tools on the
+host to be used, you can run `mkosi` manually to build the image. To build the integration test
+image without meson, run the following:
+
+```shell
+$ mkosi -f
+```
+
+Note that by default we assume that `build/` is used as the meson build directory that will be used to run
+the integration tests. If you want to use another directory as the meson build directory, you will have to
+configure the mkosi build directory (`BuildDirectory=`), cache directory (`CacheDirectory=`) and output
+directory (`OutputDirectory=`) to point to the other directory using `mkosi.local.conf`.
+
 After the image has been built, the integration tests can be run with:
 
 ```shell
-$ SYSTEMD_INTEGRATION_TESTS=1 meson test -C build/ --suite integration-tests --num-processes "$(($(nproc) / 4))"
+$ SYSTEMD_INTEGRATION_TESTS=1 meson test -C build --no-rebuild --suite integration-tests --num-processes "$(($(nproc) / 4))"
 ```
 
 As usual, specific tests can be run in meson by appending the name of the test
 which is usually the name of the directory e.g.
 
 ```shell
-$ SYSTEMD_INTEGRATION_TESTS=1 meson test -C build/ -v TEST-01-BASIC
+$ SYSTEMD_INTEGRATION_TESTS=1 meson test -C build --no-rebuild -v TEST-01-BASIC
 ```
 
 See `meson introspect build --tests` for a list of tests.
@@ -40,7 +69,7 @@ To interactively debug a failing integration test, the `--interactive` option
 newer:
 
 ```shell
-$ SYSTEMD_INTEGRATION_TESTS=1 meson test -C build/ -i TEST-01-BASIC
+$ SYSTEMD_INTEGRATION_TESTS=1 meson test -C build --no-rebuild -i TEST-01-BASIC
 ```
 
 Due to limitations in meson, the integration tests do not yet depend on the
@@ -49,13 +78,52 @@ running the integration tests. To rebuild the image and rerun a test, the
 following command can be used:
 
 ```shell
-$ meson compile -C build mkosi && SYSTEMD_INTEGRATION_TESTS=1 meson test -C build -v TEST-01-BASIC
+$ meson compile -C build mkosi && SYSTEMD_INTEGRATION_TESTS=1 meson test -C build --no-rebuild -v TEST-01-BASIC
 ```
 
 The integration tests use the same mkosi configuration that's used when you run
 mkosi in the systemd reposistory, so any local modifications to the mkosi
 configuration (e.g. in `mkosi.local.conf`) are automatically picked up and used
 by the integration tests as well.
+
+## Iterating on an integration test
+
+To iterate on an integration test, let's first get a shell in the integration test environment by running
+the following:
+
+```shell
+$ meson compile -C build mkosi && SYSTEMD_INTEGRATION_TESTS=1 TEST_SHELL=1 meson test -C build --no-rebuild -i TEST-01-BASIC
+```
+
+This will get us a shell in the integration test environment after booting the machine without running the
+integration test itself. After booting, we can verify the integration test passes by running it manually,
+for example with `systemctl start TEST-01-BASIC`.
+
+Now you can extend the test in whatever way you like to add more coverage of existing features or to add
+coverage for a new feature. Once you've finished writing the logic and want to rerun the test, run the
+the following on the host:
+
+```shell
+$ mkosi -t none
+```
+
+This will rebuild the distribution packages without rebuilding the entire integration test image. Next, run
+the following in the integration test machine:
+
+```shell
+$ systemctl soft-reboot
+$ systemctl start TEST-01-BASIC
+```
+
+A soft-reboot is required to make sure all the leftover state from the previous run of the test is cleaned
+up by soft-rebooting into the btrfs snapshot we made before running the test. After the soft-reboot,
+re-running the test will first install the new packages we just built, make a new snapshot and finally run
+the test again. You can keep running the loop of `mkosi -t none`, `systemctl soft-reboot` and
+`systemctl start ...` until the changes to the integration test are working.
+
+If you're debugging a failing integration test (running `meson test --interactive` without `TEST_SHELL`),
+there's no need to run `systemctl start ...`, running `systemctl soft-reboot` on its own is sufficient to
+rerun the test.
 
 ## Running the integration tests the old fashioned way
 
@@ -134,10 +202,6 @@ systemd-nspawn.
 `TEST_NO_KVM=1`: Disable qemu KVM auto-detection (may be necessary when you're
 trying to run the *vanilla* qemu and have both qemu and qemu-kvm installed)
 
-`TEST_NESTED_KVM=1`:  Allow tests to run with nested KVM. By default, the
-testsuite disables nested KVM if the host machine already runs under KVM.
-Setting this variable disables such checks.
-
 `QEMU_MEM=512M`: Configure amount of memory for qemu VMs (defaults to 512M).
 
 `QEMU_SMP=1`: Configure number of CPUs for qemu VMs (defaults to 1).
@@ -152,7 +216,7 @@ sec).
 `NSPAWN_TIMEOUT=infinity`: Set a timeout for tests under systemd-nspawn
 (defaults to 1800 sec).
 
-`INTERACTIVE_DEBUG=1`: Configure the machine to be more *user-friendly* for
+`TEST_SHELL=1`: Configure the machine to be more *user-friendly* for
 interactive debugging (e.g. by setting a usable default terminal, suppressing
 the shutdown after the test, etc.).
 
@@ -169,13 +233,15 @@ or Debian's default kernel path and initrd are used by default.)
 A script will try to find your qemu binary. If you want to specify a different
 one with `$QEMU_BIN`.
 
+`TEST_SKIP`: takes a space separated list of tests to skip.
+
 ### Debugging the qemu image
 
-If you want to log in the testsuite virtual machine, use `INTERACTIVE_DEBUG=1`
+If you want to log in the testsuite virtual machine, use `TEST_SHELL=1`
 and log in as root:
 
 ```shell
-$ sudo make -C test/TEST-01-BASIC INTERACTIVE_DEBUG=1 run
+$ sudo make -C test/TEST-01-BASIC TEST_SHELL=1 run
 ```
 
 The root password is empty.
@@ -219,7 +285,12 @@ is available at:
 
 https://autopkgtest.ubuntu.com/results/autopkgtest-noble-upstream-systemd-ci-systemd-ci/
 
-paths listed at this URL can be appended to the URL to download them.
+paths listed at this URL can be appended to the URL to download them. Unfortunately
+there are too many results and the web server cannot list them all at once. Fortunately
+there is a workaround: copy the last line on the page, and append it to the URL, with
+a '?marker=' prefix, and the web server will show the next page of results. For example:
+
+https://autopkgtest.ubuntu.com/results/autopkgtest-noble-upstream-systemd-ci-systemd-ci/?marker=noble/amd64/s/systemd-upstream/20240616_211635_5993a@/result.tar
 
 The 5 characters at the end of the last directory are not random, but the first
 5 characters of a SHA1 hash generated based on the set of parameters given to

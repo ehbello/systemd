@@ -1148,6 +1148,11 @@ static void resolve_service_all_complete(DnsQuery *query) {
         if (r < 0)
                 goto finish;
 
+        if (isempty(type)) {
+                r = reply_method_errorf(q, BUS_ERROR_INCONSISTENT_SERVICE_RECORDS, "'%s' does not provide a consistent set of service resource records", dns_query_string(q));
+                goto finish;
+        }
+
         r = sd_bus_message_append(
                         reply,
                         "ssst",
@@ -1747,7 +1752,7 @@ static int get_any_link(Manager *m, int ifindex, Link **ret, sd_bus_error *error
 
 static int call_link_method(Manager *m, sd_bus_message *message, sd_bus_message_handler_t handler, sd_bus_error *error) {
         int ifindex, r;
-        Link *l;
+        Link *l = NULL;  /* avoid false maybe-uninitialized warning */
 
         assert(m);
         assert(message);
@@ -1808,7 +1813,7 @@ static int bus_method_get_link(sd_bus_message *message, void *userdata, sd_bus_e
         _cleanup_free_ char *p = NULL;
         Manager *m = ASSERT_PTR(userdata);
         int r, ifindex;
-        Link *l;
+        Link *l = NULL;  /* avoid false maybe-uninitialized warning */
 
         assert(message);
 

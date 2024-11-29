@@ -17,6 +17,8 @@
 #include "sd-event.h"
 
 #include "alloc-util.h"
+#include "ansi-color.h"
+#include "env-util.h"
 #include "errno-util.h"
 #include "extract-word.h"
 #include "fd-util.h"
@@ -367,6 +369,21 @@ static int insert_background_fix(PTYForward *f, size_t offset) {
         return insert_string(f, offset, s);
 }
 
+bool shall_set_terminal_title(void) {
+        static int cache = -1;
+
+        if (cache >= 0)
+                return cache;
+
+        cache = getenv_bool("SYSTEMD_ADJUST_TERMINAL_TITLE");
+        if (cache == -ENXIO)
+                return (cache = true);
+        if (cache < 0)
+                log_debug_errno(cache, "Failed to parse $SYSTEMD_ADJUST_TERMINAL_TITLE, leaving terminal title setting enabled: %m");
+
+        return cache != 0;
+}
+
 static int insert_window_title_fix(PTYForward *f, size_t offset) {
         assert(f);
 
@@ -380,7 +397,7 @@ static int insert_window_title_fix(PTYForward *f, size_t offset) {
         if (!t)
                 return 0;
 
-        _cleanup_free_ char *joined = strjoin("\x1b]0;", f->title_prefix, t, "\a");
+        _cleanup_free_ char *joined = strjoin(ANSI_OSC "0;", f->title_prefix, t, ANSI_ST);
         if (!joined)
                 return -ENOMEM;
 
@@ -427,6 +444,16 @@ static int pty_forward_ansi_process(PTYForward *f, size_t offset) {
                         } else if (c == ']') {
                                 f->ansi_color_state = ANSI_COLOR_STATE_OSC_SEQUENCE;
                                 continue;
+                        } else if (c == 'c') {
+                                /* "Full reset" aka "Reset to initial state"*/
+                                r = insert_background_color(f, i+1);
+                                if (r < 0)
+                                        return r;
+
+                                i += r;
+
+                                f->ansi_color_state = ANSI_COLOR_STATE_TEXT;
+                                continue;
                         }
                         break;
 
@@ -446,7 +473,15 @@ static int pty_forward_ansi_process(PTYForward *f, size_t offset) {
                         } else {
                                 /* Otherwise, the CSI sequence is over */
 
-                                if (c == 'm') {
+                                if (c == 'p' && streq_ptr(f->csi_sequence, "!")) {
+
+                                        /* CSI ! p → "Soft Reset", let's immediately fix our bg color again */
+                                        r = insert_background_color(f, i+1);
+                                        if (r < 0)
+                                                return r;
+
+                                        i += r;
+                                } else if (c == 'm') {
                                         /* This is an "SGR" (Select Graphic Rendition) sequence. Patch in our background color. */
                                         r = insert_background_fix(f, i);
                                         if (r < 0)
@@ -472,11 +507,16 @@ static int pty_forward_ansi_process(PTYForward *f, size_t offset) {
                         } else {
                                 /* Otherwise, the OSC sequence is over
                                  *
-                                 * There are two allowed ways to end an OSC sequence:
-                                 * BEL '\x07'
-                                 * String Terminator (ST): <Esc>\ - "\x1b\x5c"
-                                 * since we cannot lookahead to see if the Esc is followed by a \
-                                 * we cut a corner here and assume it will be \. */
+                                 * There are three documented ways to end an OSC sequence:
+                                 *     1. BEL aka ^G aka \x07
+                                 *     2. \x9c
+                                 *     3. \x1b\x5c
+                                 * since we cannot look ahead to see if the Esc is followed by a "\"
+                                 * we cut a corner here and assume it will be "\"e.
+                                 *
+                                 * Note that we do not support \x9c here, because that's also a valid UTF8
+                                 * codepoint, and that would create ambiguity. Various terminal emulators
+                                 * similar do not support it. */
 
                                 if (IN_SET(c, '\x07', '\x1b')) {
                                         r = insert_window_title_fix(f, i+1);
@@ -532,7 +572,7 @@ static int do_shovel(PTYForward *f) {
                 if (f->title) {
                         if (!strextend(&f->out_buffer,
                                        ANSI_WINDOW_TITLE_PUSH
-                                       "\x1b]2;", f->title, "\a"))
+                                       ANSI_OSC "2;", f->title, ANSI_ST))
                                 return log_oom();
                 }
 
@@ -907,7 +947,7 @@ int pty_forward_new(
 
         (void) sd_event_source_set_description(f->master_event_source, "ptyfwd-master");
 
-        r = sd_event_add_signal(f->event, &f->sigwinch_event_source, SIGWINCH, on_sigwinch_event, f);
+        r = sd_event_add_signal(f->event, &f->sigwinch_event_source, SIGWINCH|SD_EVENT_SIGNAL_PROCMASK, on_sigwinch_event, f);
         if (r < 0)
                 return r;
 

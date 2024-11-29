@@ -31,11 +31,14 @@ test_append_files() {
     inst_binary ssh
     inst_binary sshd
     inst_binary ssh-keygen
+    image_install -o /usr/lib/ssh/sshd-session /usr/libexec/openssh/sshd-session
     inst_binary usermod
     instmods vmw_vsock_virtio_transport
     instmods vsock_loopback
     instmods vmw_vsock_vmci_transport
+    inst_binary gcc
     generate_module_dependencies
+    inst_binary openssl
 }
 
 do_test "$@"

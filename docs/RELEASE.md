@@ -23,8 +23,13 @@ SPDX-License-Identifier: LGPL-2.1-or-later
 14. "Draft" a new release on github (https://github.com/systemd/systemd/releases/new), mark "This is a pre-release" if appropriate.
 15. Check that announcement to systemd-devel, with a copy&paste from NEWS, was sent. This should happen automatically.
 16. Update IRC topic (`/msg chanserv TOPIC #systemd Version NNN released | Online resources https://systemd.io/`)
-17. [FINAL] Push commits to stable, create an empty -stable branch: `git push systemd-stable --atomic origin/main:main origin/main:refs/heads/${version}-stable`.
+17. [FINAL] Create an empty -stable branch: `git push systemd origin/main:refs/heads/v${version}-stable`.
 18. [FINAL] Build and upload the documentation (on the -stable branch): `ninja -C build doc-sync`
-19. [FINAL] Change the default branch to latest release (https://github.com/systemd/systemd-stable/settings/branches).
-20. [FINAL] Change the Github Pages branch in the stable repository to the newly created branch (https://github.com/systemd/systemd-stable/settings/pages) and set the 'Custom domain' to 'systemd.io'
+20. [FINAL] Change the Github Pages branch to the newly created branch (https://github.com/systemd/systemd/settings/pages) and set the 'Custom domain' to 'systemd.io'
 21. [FINAL] Update version number in `meson.version` to the devel version of the next release (e.g. from `v256` to `v257~devel`)
+
+# Steps to a Successful Stable Release
+
+1. Backport at least the commits from all PRs tagged with `needs-stable-backport` on Github with `git cherry-pick -x`. Any other commits that fix bugs, change documentation, tests, CI or mkosi can generally be backported as well. Since 256 the stable branches live [here](https://github.com/systemd/systemd/). Stable branches for older releases are available [here](https://github.com/systemd/systemd-stable/). Check each commit to see if it makes sense to backport and check the comments on the PR to see if the author indicated that only specific commits should be backported.
+2. Update the version number in `meson.version` (e.g. from `256.2` to `256.3`) (only for 256-stable or newer)
+3. Tag the release: `version="v$(cat meson.version)" && git tag -s "${version}" -m "systemd-stable ${version}"` (Fill in the version manually on releases older than 256)
