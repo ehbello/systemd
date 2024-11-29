@@ -106,7 +106,7 @@ ftruncate	1098
 ftruncate64
 futex	1230
 futex_time64
-futex_waitv
+futex_waitv	1473
 futimesat	1285
 get_kernel_syms
 get_mempolicy	1260
@@ -473,6 +473,7 @@ sendmmsg	1331
 sendmsg	1205
 sendto	1199
 set_mempolicy	1261
+set_mempolicy_home_node	1474
 set_robust_list	1298
 set_thread_area
 set_tid_address	1233

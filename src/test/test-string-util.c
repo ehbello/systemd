@@ -166,33 +166,33 @@ TEST(cellescape) {
         assert_se(streq(cellescape(buf, 1, "\020"), ""));
         assert_se(streq(cellescape(buf, 2, "\020"), "."));
         assert_se(streq(cellescape(buf, 3, "\020"), ".."));
-        assert_se(streq(cellescape(buf, 4, "\020"), "…"));
+        assert_se(streq(cellescape(buf, 4, "\020"), is_locale_utf8() ? "…" : "..."));
         assert_se(streq(cellescape(buf, 5, "\020"), "\\020"));
 
-        assert_se(streq(cellescape(buf, 5, "1234\020"), "1…"));
-        assert_se(streq(cellescape(buf, 6, "1234\020"), "12…"));
-        assert_se(streq(cellescape(buf, 7, "1234\020"), "123…"));
-        assert_se(streq(cellescape(buf, 8, "1234\020"), "1234…"));
+        assert_se(streq(cellescape(buf, 5, "1234\020"), is_locale_utf8() ? "1…" : "1..."));
+        assert_se(streq(cellescape(buf, 6, "1234\020"), is_locale_utf8() ? "12…" : "12..."));
+        assert_se(streq(cellescape(buf, 7, "1234\020"), is_locale_utf8() ? "123…" : "123..."));
+        assert_se(streq(cellescape(buf, 8, "1234\020"), is_locale_utf8() ? "1234…" : "1234..."));
         assert_se(streq(cellescape(buf, 9, "1234\020"), "1234\\020"));
 
         assert_se(streq(cellescape(buf, 1, "\t\n"), ""));
         assert_se(streq(cellescape(buf, 2, "\t\n"), "."));
         assert_se(streq(cellescape(buf, 3, "\t\n"), ".."));
-        assert_se(streq(cellescape(buf, 4, "\t\n"), "…"));
+        assert_se(streq(cellescape(buf, 4, "\t\n"), is_locale_utf8() ? "…" : "..."));
         assert_se(streq(cellescape(buf, 5, "\t\n"), "\\t\\n"));
 
-        assert_se(streq(cellescape(buf, 5, "1234\t\n"), "1…"));
-        assert_se(streq(cellescape(buf, 6, "1234\t\n"), "12…"));
-        assert_se(streq(cellescape(buf, 7, "1234\t\n"), "123…"));
-        assert_se(streq(cellescape(buf, 8, "1234\t\n"), "1234…"));
+        assert_se(streq(cellescape(buf, 5, "1234\t\n"), is_locale_utf8() ? "1…" : "1..."));
+        assert_se(streq(cellescape(buf, 6, "1234\t\n"), is_locale_utf8() ? "12…" : "12..."));
+        assert_se(streq(cellescape(buf, 7, "1234\t\n"), is_locale_utf8() ? "123…" : "123..."));
+        assert_se(streq(cellescape(buf, 8, "1234\t\n"), is_locale_utf8() ? "1234…" : "1234..."));
         assert_se(streq(cellescape(buf, 9, "1234\t\n"), "1234\\t\\n"));
 
-        assert_se(streq(cellescape(buf, 4, "x\t\020\n"), "…"));
-        assert_se(streq(cellescape(buf, 5, "x\t\020\n"), "x…"));
-        assert_se(streq(cellescape(buf, 6, "x\t\020\n"), "x…"));
-        assert_se(streq(cellescape(buf, 7, "x\t\020\n"), "x\\t…"));
-        assert_se(streq(cellescape(buf, 8, "x\t\020\n"), "x\\t…"));
-        assert_se(streq(cellescape(buf, 9, "x\t\020\n"), "x\\t…"));
+        assert_se(streq(cellescape(buf, 4, "x\t\020\n"), is_locale_utf8() ? "…" : "..."));
+        assert_se(streq(cellescape(buf, 5, "x\t\020\n"), is_locale_utf8() ? "x…" : "x..."));
+        assert_se(streq(cellescape(buf, 6, "x\t\020\n"), is_locale_utf8() ? "x…" : "x..."));
+        assert_se(streq(cellescape(buf, 7, "x\t\020\n"), is_locale_utf8() ? "x\\t…" : "x\\t..."));
+        assert_se(streq(cellescape(buf, 8, "x\t\020\n"), is_locale_utf8() ? "x\\t…" : "x\\t..."));
+        assert_se(streq(cellescape(buf, 9, "x\t\020\n"), is_locale_utf8() ? "x\\t…" : "x\\t..."));
         assert_se(streq(cellescape(buf, 10, "x\t\020\n"), "x\\t\\020\\n"));
 
         assert_se(streq(cellescape(buf, 6, "1\011"), "1\\t"));
@@ -865,7 +865,6 @@ TEST(strverscmp_improved) {
                 "124",
                 NULL,
         };
-        const char * const *p, * const *q;
 
         STRV_FOREACH(p, versions)
                 STRV_FOREACH(q, p + 1)
@@ -934,6 +933,26 @@ TEST(strextendf) {
 
         assert_se(strextendf_with_separator(&p, ",", "<%08x>", 0x1234) >= 0);
         assert_se(streq(p, "<77>,<99>,<                                                                              88>,<00001234>"));
+}
+
+TEST(string_replace_char) {
+        assert_se(streq(string_replace_char(strdupa(""), 'a', 'b'), ""));
+        assert_se(streq(string_replace_char(strdupa("abc"), 'a', 'b'), "bbc"));
+        assert_se(streq(string_replace_char(strdupa("hoge"), 'a', 'b'), "hoge"));
+        assert_se(streq(string_replace_char(strdupa("aaaa"), 'a', 'b'), "bbbb"));
+        assert_se(streq(string_replace_char(strdupa("aaaa"), 'a', '\t'), "\t\t\t\t"));
+}
+
+TEST(strspn_from_end) {
+        assert_se(strspn_from_end(NULL, NULL) == 0);
+        assert_se(strspn_from_end("hoge", NULL) == 0);
+        assert_se(strspn_from_end(NULL, DIGITS) == 0);
+        assert_se(strspn_from_end("", DIGITS) == 0);
+        assert_se(strspn_from_end("hoge", DIGITS) == 0);
+        assert_se(strspn_from_end("1234", DIGITS) == 4);
+        assert_se(strspn_from_end("aaa1234", DIGITS) == 4);
+        assert_se(strspn_from_end("aaa1234aaa", DIGITS) == 0);
+        assert_se(strspn_from_end("aaa12aa34", DIGITS) == 2);
 }
 
 TEST(streq_skip_trailing_chars) {

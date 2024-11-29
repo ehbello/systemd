@@ -89,7 +89,6 @@ static int show_cgroup_one_by_path(
         _cleanup_fclose_ FILE *f = NULL;
         _cleanup_free_ char *p = NULL;
         size_t n = 0;
-        pid_t pid;
         char *fn;
         int r;
 
@@ -102,7 +101,18 @@ static int show_cgroup_one_by_path(
         if (!f)
                 return -errno;
 
-        while ((r = cg_read_pid(f, &pid)) > 0) {
+        for (;;) {
+                pid_t pid;
+
+                /* libvirt / qemu uses threaded mode and cgroup.procs cannot be read at the lower levels.
+                 * From https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html#threads,
+                 * “cgroup.procs” in a threaded domain cgroup contains the PIDs of all processes in
+                 * the subtree and is not readable in the subtree proper. */
+                r = cg_read_pid(f, &pid);
+                if (IN_SET(r, 0, -EOPNOTSUPP))
+                        break;
+                if (r < 0)
+                        return r;
 
                 if (!(flags & OUTPUT_KERNEL_THREADS) && is_kernel_thread(pid) > 0)
                         continue;
@@ -113,12 +123,34 @@ static int show_cgroup_one_by_path(
                 pids[n++] = pid;
         }
 
-        if (r < 0)
-                return r;
-
         show_pid_array(pids, n, prefix, n_columns, false, more, flags);
 
         return 0;
+}
+
+static int is_delegated(int cgfd, const char *path) {
+        _cleanup_free_ char *b = NULL;
+        int r;
+
+        assert(cgfd >= 0 || path);
+
+        r = getxattr_malloc(cgfd < 0 ? path : FORMAT_PROC_FD_PATH(cgfd), "trusted.delegate", &b);
+        if (r == -ENODATA) {
+                /* If the trusted xattr isn't set (preferred), then check the untrusted one. Under the
+                 * assumption that whoever is trusted enough to own the cgroup, is also trusted enough to
+                 * decide if it is delegated or not this should be safe. */
+                r = getxattr_malloc(cgfd < 0 ? path : FORMAT_PROC_FD_PATH(cgfd), "user.delegate", &b);
+                if (r == -ENODATA)
+                        return false;
+        }
+        if (r < 0)
+                return log_debug_errno(r, "Failed to read delegate xattr, ignoring: %m");
+
+        r = parse_boolean(b);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to parse delegate xattr boolean value, ignoring: %m");
+
+        return r;
 }
 
 static int show_cgroup_name(
@@ -130,7 +162,7 @@ static int show_cgroup_name(
         uint64_t cgroupid = UINT64_MAX;
         _cleanup_free_ char *b = NULL;
         _cleanup_close_ int fd = -1;
-        bool delegate = false;
+        bool delegate;
         int r;
 
         if (FLAGS_SET(flags, OUTPUT_CGROUP_XATTRS) || FLAGS_SET(flags, OUTPUT_CGROUP_ID)) {
@@ -139,19 +171,7 @@ static int show_cgroup_name(
                         log_debug_errno(errno, "Failed to open cgroup '%s', ignoring: %m", path);
         }
 
-        r = getxattr_malloc(fd < 0 ? path : FORMAT_PROC_FD_PATH(fd), "trusted.delegate", &b);
-        if (r < 0) {
-                if (r != -ENODATA)
-                        log_debug_errno(r, "Failed to read trusted.delegate extended attribute, ignoring: %m");
-        } else {
-                r = parse_boolean(b);
-                if (r < 0)
-                        log_debug_errno(r, "Failed to parse trusted.delegate extended attribute boolean value, ignoring: %m");
-                else
-                        delegate = r > 0;
-
-                b = mfree(b);
-        }
+        delegate = is_delegated(fd, path) > 0;
 
         if (FLAGS_SET(flags, OUTPUT_CGROUP_ID)) {
                 cg_file_handle fh = CG_FILE_HANDLE_INIT;
@@ -221,7 +241,7 @@ static int show_cgroup_name(
                         printf("%s%s%s %s%s%s: %s\n",
                                prefix,
                                glyph == SPECIAL_GLYPH_TREE_BRANCH ? special_glyph(SPECIAL_GLYPH_TREE_VERTICAL) : "  ",
-                               special_glyph(SPECIAL_GLYPH_ARROW),
+                               special_glyph(SPECIAL_GLYPH_ARROW_RIGHT),
                                ansi_blue(), x, ansi_normal(),
                                y);
                 }

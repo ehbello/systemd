@@ -529,7 +529,6 @@ static DnsScopeMatch match_subnet_reverse_lookups(
                 bool exclude_own) {
 
         union in_addr_union ia;
-        LinkAddress *a;
         int f, r;
 
         assert(s);
@@ -584,11 +583,12 @@ static DnsScopeMatch match_subnet_reverse_lookups(
 
 DnsScopeMatch dns_scope_good_domain(
                 DnsScope *s,
-                int ifindex,
-                uint64_t flags,
-                const char *domain) {
+                DnsQuery *q) {
 
-        DnsSearchDomain *d;
+        DnsQuestion *question;
+        const char *domain;
+        uint64_t flags;
+        int ifindex;
 
         /* This returns the following return values:
          *
@@ -602,7 +602,18 @@ DnsScopeMatch dns_scope_good_domain(
          */
 
         assert(s);
-        assert(domain);
+        assert(q);
+
+        question = dns_query_question_for_protocol(q, s->protocol);
+        if (!question)
+                return DNS_SCOPE_NO;
+
+        domain = dns_question_first_name(question);
+        if (!domain)
+                return DNS_SCOPE_NO;
+
+        ifindex = q->ifindex;
+        flags = q->flags;
 
         /* Checks if the specified domain is something to look up on this scope. Note that this accepts
          * non-qualified hostnames, i.e. those without any search path suffixed. */
@@ -620,14 +631,8 @@ DnsScopeMatch dns_scope_good_domain(
             dns_name_equal(domain, "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa") > 0)
                 return DNS_SCOPE_NO;
 
-        /* Never respond to some of the domains listed in RFC6303 */
-        if (dns_name_endswith(domain, "0.in-addr.arpa") > 0 ||
-            dns_name_equal(domain, "255.255.255.255.in-addr.arpa") > 0 ||
-            dns_name_equal(domain, "0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa") > 0)
-                return DNS_SCOPE_NO;
-
-        /* Never respond to some of the domains listed in RFC6761 */
-        if (dns_name_endswith(domain, "invalid") > 0)
+        /* Never respond to some of the domains listed in RFC6303 + RFC6761 */
+        if (dns_name_dont_resolve(domain))
                 return DNS_SCOPE_NO;
 
         /* Never go to network for the _gateway or _outbound domain — they're something special, synthesized locally. */
@@ -640,6 +645,22 @@ DnsScopeMatch dns_scope_good_domain(
                 bool has_search_domains = false;
                 DnsScopeMatch m;
                 int n_best = -1;
+
+                if (dns_name_is_empty(domain)) {
+                        DnsResourceKey *t;
+                        bool found = false;
+
+                        /* Refuse empty name if only A and/or AAAA records are requested. */
+
+                        DNS_QUESTION_FOREACH(t, question)
+                                if (!IN_SET(t->type, DNS_TYPE_A, DNS_TYPE_AAAA)) {
+                                        found = true;
+                                        break;
+                                }
+
+                        if (!found)
+                                return DNS_SCOPE_NO;
+                }
 
                 /* Never route things to scopes that lack DNS servers */
                 if (!dns_scope_get_dns_server(s))
@@ -1059,7 +1080,7 @@ DnsTransaction *dns_scope_find_transaction(
                 DnsResourceKey *key,
                 uint64_t query_flags) {
 
-        DnsTransaction *first, *t;
+        DnsTransaction *first;
 
         assert(scope);
         assert(key);
@@ -1218,7 +1239,7 @@ int dns_scope_notify_conflict(DnsScope *scope, DnsResourceRecord *rr) {
         r = sd_event_add_time_relative(
                         scope->manager->event,
                         &scope->conflict_event_source,
-                        clock_boottime_or_monotonic(),
+                        CLOCK_BOOTTIME,
                         jitter,
                         LLMNR_JITTER_INTERVAL_USEC,
                         on_conflict_dispatch, scope);
@@ -1375,8 +1396,7 @@ int dns_scope_announce(DnsScope *scope, bool goodbye) {
         _cleanup_(dns_answer_unrefp) DnsAnswer *answer = NULL;
         _cleanup_(dns_packet_unrefp) DnsPacket *p = NULL;
         _cleanup_set_free_ Set *types = NULL;
-        DnsTransaction *t;
-        DnsZoneItem *z, *i;
+        DnsZoneItem *z;
         unsigned size = 0;
         char *service_type;
         int r;
@@ -1454,12 +1474,16 @@ int dns_scope_announce(DnsScope *scope, bool goodbye) {
                                                   "_services._dns-sd._udp.local");
                 if (!rr)
                         return log_oom();
+
                 rr->ptr.name = strdup(service_type);
+                if (!rr->ptr.name)
+                        return log_oom();
+
                 rr->ttl = MDNS_DEFAULT_TTL;
 
                 r = dns_zone_put(&scope->zone, scope, rr, false);
                 if (r < 0)
-                        log_warning_errno(r, "Failed to add DNS-SD PTR record to MDNS zone: %m");
+                        log_warning_errno(r, "Failed to add DNS-SD PTR record to MDNS zone, ignoring: %m");
 
                 r = dns_answer_add(answer, rr, 0, 0, NULL);
                 if (r < 0)
@@ -1485,7 +1509,7 @@ int dns_scope_announce(DnsScope *scope, bool goodbye) {
                 r = sd_event_add_time_relative(
                                 scope->manager->event,
                                 &scope->announce_event_source,
-                                clock_boottime_or_monotonic(),
+                                CLOCK_BOOTTIME,
                                 MDNS_ANNOUNCE_DELAY,
                                 MDNS_JITTER_RANGE_USEC,
                                 on_announcement_timeout, scope);
@@ -1500,7 +1524,6 @@ int dns_scope_announce(DnsScope *scope, bool goodbye) {
 
 int dns_scope_add_dnssd_services(DnsScope *scope) {
         DnssdService *service;
-        DnssdTxtData *txt_data;
         int r;
 
         assert(scope);
@@ -1534,7 +1557,6 @@ int dns_scope_add_dnssd_services(DnsScope *scope) {
 int dns_scope_remove_dnssd_services(DnsScope *scope) {
         _cleanup_(dns_resource_key_unrefp) DnsResourceKey *key = NULL;
         DnssdService *service;
-        DnssdTxtData *txt_data;
         int r;
 
         assert(scope);
@@ -1559,7 +1581,7 @@ int dns_scope_remove_dnssd_services(DnsScope *scope) {
 }
 
 static bool dns_scope_has_route_only_domains(DnsScope *scope) {
-        DnsSearchDomain *domain, *first;
+        DnsSearchDomain *first;
         bool route_only = false;
 
         assert(scope);

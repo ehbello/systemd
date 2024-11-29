@@ -5,6 +5,7 @@
 #include "alloc-util.h"
 #include "cgroup-setup.h"
 #include "cgroup-util.h"
+#include "fd-util.h"
 #include "fileio.h"
 #include "fs-util.h"
 #include "oomd-util.h"
@@ -13,6 +14,7 @@
 #include "string-util.h"
 #include "strv.h"
 #include "tests.h"
+#include "tmpfile-util.h"
 
 static int fork_and_sleep(unsigned sleep_min) {
         usec_t n, timeout, ts;
@@ -75,12 +77,16 @@ static void test_oomd_cgroup_kill(void) {
                         abort();
                 }
 
+                assert_se(cg_get_xattr_malloc(SYSTEMD_CGROUP_CONTROLLER, cgroup, "user.oomd_ooms", &v) >= 0);
+                assert_se(streq(v, i == 0 ? "1" : "2"));
+                v = mfree(v);
+
                 /* Wait a bit since processes may take some time to be cleaned up. */
                 sleep(2);
                 assert_se(cg_is_empty(SYSTEMD_CGROUP_CONTROLLER, cgroup) == true);
 
                 assert_se(cg_get_xattr_malloc(SYSTEMD_CGROUP_CONTROLLER, cgroup, "user.oomd_kill", &v) >= 0);
-                assert_se(memcmp(v, i == 0 ? "2" : "4", 2) == 0);
+                assert_se(streq(v, i == 0 ? "2" : "4"));
         }
 }
 
@@ -244,12 +250,13 @@ static void test_oomd_update_cgroup_contexts_between_hashmaps(void) {
 
 static void test_oomd_system_context_acquire(void) {
         _cleanup_(unlink_tempfilep) char path[] = "/oomdgetsysctxtestXXXXXX";
+        _cleanup_close_ int fd = -1;
         OomdSystemContext ctx;
 
         if (geteuid() != 0)
                 return (void) log_tests_skipped("not root");
 
-        assert_se(mkstemp(path));
+        assert_se((fd = mkostemp_safe(path)) >= 0);
 
         assert_se(oomd_system_context_acquire("/verylikelynonexistentpath", &ctx) == -ENOENT);
 
@@ -275,7 +282,7 @@ static void test_oomd_system_context_acquire(void) {
                                           "SwapFree:           7604 kB\n", WRITE_STRING_FILE_CREATE) == 0);
         assert_se(oomd_system_context_acquire(path, &ctx) == 0);
         assert_se(ctx.mem_total == 33275142144);
-        assert_se(ctx.mem_used == 23157497856);
+        assert_se(ctx.mem_used == 10975404032);
         assert_se(ctx.swap_total == 8589930496);
         assert_se(ctx.swap_used == 8582144000);
 }
@@ -283,7 +290,7 @@ static void test_oomd_system_context_acquire(void) {
 static void test_oomd_pressure_above(void) {
         _cleanup_hashmap_free_ Hashmap *h1 = NULL, *h2 = NULL;
         _cleanup_set_free_ Set *t1 = NULL, *t2 = NULL, *t3 = NULL;
-        OomdCGroupContext ctx[2], *c;
+        OomdCGroupContext ctx[2] = {}, *c;
         loadavg_t threshold;
 
         assert_se(store_loadavg_fixed_point(80, 0, &threshold) == 0);
@@ -300,12 +307,11 @@ static void test_oomd_pressure_above(void) {
         assert_se(store_loadavg_fixed_point(1, 11, &(ctx[1].memory_pressure.avg300)) == 0);
         ctx[1].mem_pressure_limit = threshold;
 
-
         /* High memory pressure */
         assert_se(h1 = hashmap_new(&string_hash_ops));
         assert_se(hashmap_put(h1, "/herp.slice", &ctx[0]) >= 0);
         assert_se(oomd_pressure_above(h1, 0 /* duration */, &t1) == 1);
-        assert_se(set_contains(t1, &ctx[0]) == true);
+        assert_se(set_contains(t1, &ctx[0]));
         assert_se(c = hashmap_get(h1, "/herp.slice"));
         assert_se(c->mem_pressure_limit_hit_start > 0);
 
@@ -313,14 +319,14 @@ static void test_oomd_pressure_above(void) {
         assert_se(h2 = hashmap_new(&string_hash_ops));
         assert_se(hashmap_put(h2, "/derp.slice", &ctx[1]) >= 0);
         assert_se(oomd_pressure_above(h2, 0 /* duration */, &t2) == 0);
-        assert_se(t2 == NULL);
+        assert_se(!t2);
         assert_se(c = hashmap_get(h2, "/derp.slice"));
         assert_se(c->mem_pressure_limit_hit_start == 0);
 
         /* High memory pressure w/ multiple cgroups */
         assert_se(hashmap_put(h1, "/derp.slice", &ctx[1]) >= 0);
         assert_se(oomd_pressure_above(h1, 0 /* duration */, &t3) == 1);
-        assert_se(set_contains(t3, &ctx[0]) == true);
+        assert_se(set_contains(t3, &ctx[0]));
         assert_se(set_size(t3) == 1);
         assert_se(c = hashmap_get(h1, "/herp.slice"));
         assert_se(c->mem_pressure_limit_hit_start > 0);
@@ -335,7 +341,7 @@ static void test_oomd_mem_and_swap_free_below(void) {
                 .swap_total = 20971512 * 1024U,
                 .swap_used = 20971440 * 1024U,
         };
-        assert_se(oomd_mem_free_below(&ctx, 2000) == false);
+        assert_se(oomd_mem_available_below(&ctx, 2000) == false);
         assert_se(oomd_swap_free_below(&ctx, 2000) == true);
 
         ctx = (OomdSystemContext) {
@@ -344,7 +350,7 @@ static void test_oomd_mem_and_swap_free_below(void) {
                 .swap_total = 20971512 * 1024U,
                 .swap_used = 3310136 * 1024U,
         };
-        assert_se(oomd_mem_free_below(&ctx, 2000) == true);
+        assert_se(oomd_mem_available_below(&ctx, 2000) == true);
         assert_se(oomd_swap_free_below(&ctx, 2000) == false);
 
         ctx = (OomdSystemContext) {
@@ -353,7 +359,7 @@ static void test_oomd_mem_and_swap_free_below(void) {
                 .swap_total = 0,
                 .swap_used = 0,
         };
-        assert_se(oomd_mem_free_below(&ctx, 2000) == false);
+        assert_se(oomd_mem_available_below(&ctx, 2000) == false);
         assert_se(oomd_swap_free_below(&ctx, 2000) == false);
 }
 

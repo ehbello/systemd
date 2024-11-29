@@ -75,7 +75,7 @@ typedef enum ServiceResult {
         SERVICE_FAILURE_CORE_DUMP,
         SERVICE_FAILURE_WATCHDOG,
         SERVICE_FAILURE_START_LIMIT_HIT,
-        SERVICE_FAILURE_OOM_KILL,
+        SERVICE_FAILURE_OOM_KILL, /* OOM Kill by the Kernel or systemd-oomd */
         SERVICE_SKIP_CONDITION,
         _SERVICE_RESULT_MAX,
         _SERVICE_RESULT_INVALID = -EINVAL,
@@ -194,6 +194,8 @@ struct Service {
 
         NotifyAccess notify_access;
         NotifyState notify_state;
+
+        sd_bus_slot *bus_name_pid_lookup_slot;
 
         sd_event_source *exec_fd_event_source;
 

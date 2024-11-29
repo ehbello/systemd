@@ -73,6 +73,8 @@ libcore_sources = '''
         generator-setup.h
         ima-setup.c
         ima-setup.h
+        import-creds.c
+        import-creds.h
         job.c
         job.h
         kill.c
@@ -151,7 +153,7 @@ load_fragment_gperf_gperf = custom_target(
         'load-fragment-gperf.gperf',
         input : 'load-fragment-gperf.gperf.in',
         output: 'load-fragment-gperf.gperf',
-        command : [meson_render_jinja2, config_h, '@INPUT@', '@OUTPUT@'])
+        command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'])
 
 load_fragment_gperf_c = custom_target(
         'load-fragment-gperf.c',
@@ -167,12 +169,18 @@ load_fragment_gperf_nulstr_c = custom_target(
         command : [awk, '-f', '@INPUT0@', '@INPUT1@'],
         capture : true)
 
-libcore = static_library(
-        'core',
+libcore_name = 'systemd-core-@0@'.format(shared_lib_tag)
+
+libcore = shared_library(
+        libcore_name,
         libcore_sources,
         load_fragment_gperf_c,
         load_fragment_gperf_nulstr_c,
         include_directories : includes,
+        c_args : ['-fvisibility=default'],
+        link_args : ['-shared',
+                     '-Wl,--version-script=' + libshared_sym_path],
+        link_with : libshared,
         dependencies : [versiondep,
                         threads,
                         libdl,
@@ -184,12 +192,19 @@ libcore = static_library(
                         libapparmor,
                         libselinux,
                         libmount,
+                        libblkid,
                         libacl],
-        build_by_default : false)
+        install : true,
+        install_dir : rootlibexecdir)
 
 core_includes = [includes, include_directories('.')]
 
-systemd_sources = files('main.c')
+systemd_sources = files(
+        'main.c',
+        'main.h',
+        'crash-handler.c',
+        'crash-handler.h',
+)
 
 in_files = [['system.conf',                     pkgsysconfdir],
             ['user.conf',                       pkgsysconfdir],
@@ -204,7 +219,7 @@ foreach item : in_files
                 file,
                 input : file + '.in',
                 output: file,
-                command : [meson_render_jinja2, config_h, '@INPUT@', '@OUTPUT@'],
+                command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'],
                 install : (dir == pkgsysconfdir) ? install_sysconfdir_samples : (dir != 'no'),
                 install_dir : dir)
 endforeach
@@ -228,7 +243,7 @@ endif
 ############################################################
 
 fuzzers += [
-        [['src/core/fuzz-unit-file.c'],
+        [files('fuzz-unit-file.c'),
          [libcore,
           libshared],
          [libmount]],

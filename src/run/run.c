@@ -794,9 +794,12 @@ static int transient_service_set_properties(sd_bus_message *m, const char *pty_p
 
                 e = getenv("TERM");
                 if (e) {
-                        char *n;
+                        _cleanup_free_ char *n = NULL;
 
-                        n = strjoina("TERM=", e);
+                        n = strjoin("TERM=", e);
+                        if (!n)
+                                return log_oom();
+
                         r = sd_bus_message_append(m,
                                                   "(sv)",
                                                   "Environment", "as", 1, n);
@@ -1229,7 +1232,7 @@ static int start_transient_service(
                 if (r < 0)
                         return bus_log_parse_error(r);
 
-                r = bus_wait_for_jobs_one(w, object, arg_quiet);
+                r = bus_wait_for_jobs_one(w, object, arg_quiet, arg_user ? STRV_MAKE_CONST("--user") : NULL);
                 if (r < 0)
                         return r;
         }
@@ -1465,7 +1468,7 @@ static int start_transient_scope(sd_bus *bus) {
         if (r < 0)
                 return bus_log_parse_error(r);
 
-        r = bus_wait_for_jobs_one(w, object, arg_quiet);
+        r = bus_wait_for_jobs_one(w, object, arg_quiet, arg_user ? STRV_MAKE_CONST("--user") : NULL);
         if (r < 0)
                 return r;
 
@@ -1685,7 +1688,7 @@ static int start_transient_trigger(
         if (r < 0)
                 return bus_log_parse_error(r);
 
-        r = bus_wait_for_jobs_one(w, object, arg_quiet);
+        r = bus_wait_for_jobs_one(w, object, arg_quiet, arg_user ? STRV_MAKE_CONST("--user") : NULL);
         if (r < 0)
                 return r;
 
@@ -1699,8 +1702,6 @@ static int start_transient_trigger(
 }
 
 static bool shall_make_executable_absolute(void) {
-        const char *f;
-
         if (strv_isempty(arg_cmdline))
                 return false;
         if (arg_transport != BUS_TRANSPORT_LOCAL)

@@ -9,9 +9,9 @@
 #include "device-util.h"
 #include "devnode-acl.h"
 #include "dirent-util.h"
-#include "escape.h"
 #include "fd-util.h"
 #include "format-util.h"
+#include "fs-util.h"
 #include "set.h"
 #include "string-util.h"
 #include "util.h"
@@ -52,8 +52,8 @@ int devnode_acl(const char *path,
                 bool del, uid_t old_uid,
                 bool add, uid_t new_uid) {
 
-        acl_t acl;
-        int r = 0;
+        _cleanup_(acl_freep) acl_t acl = NULL;
+        int r;
         bool changed = false;
 
         assert(path);
@@ -66,7 +66,7 @@ int devnode_acl(const char *path,
 
                 r = flush_acl(acl);
                 if (r < 0)
-                        goto finish;
+                        return r;
                 if (r > 0)
                         changed = true;
 
@@ -75,13 +75,11 @@ int devnode_acl(const char *path,
 
                 r = acl_find_uid(acl, old_uid, &entry);
                 if (r < 0)
-                        goto finish;
+                        return r;
 
                 if (r > 0) {
-                        if (acl_delete_entry(acl, entry) < 0) {
-                                r = -errno;
-                                goto finish;
-                        }
+                        if (acl_delete_entry(acl, entry) < 0)
+                                return -errno;
 
                         changed = true;
                 }
@@ -94,68 +92,47 @@ int devnode_acl(const char *path,
 
                 r = acl_find_uid(acl, new_uid, &entry);
                 if (r < 0)
-                        goto finish;
+                        return r;
 
                 if (r == 0) {
-                        if (acl_create_entry(&acl, &entry) < 0) {
-                                r = -errno;
-                                goto finish;
-                        }
+                        if (acl_create_entry(&acl, &entry) < 0)
+                                return -errno;
 
                         if (acl_set_tag_type(entry, ACL_USER) < 0 ||
-                            acl_set_qualifier(entry, &new_uid) < 0) {
-                                r = -errno;
-                                goto finish;
-                        }
+                            acl_set_qualifier(entry, &new_uid) < 0)
+                                return -errno;
                 }
 
-                if (acl_get_permset(entry, &permset) < 0) {
-                        r = -errno;
-                        goto finish;
-                }
+                if (acl_get_permset(entry, &permset) < 0)
+                        return -errno;
 
                 rd = acl_get_perm(permset, ACL_READ);
-                if (rd < 0) {
-                        r = -errno;
-                        goto finish;
-                }
+                if (rd < 0)
+                        return -errno;
 
                 wt = acl_get_perm(permset, ACL_WRITE);
-                if (wt < 0) {
-                        r = -errno;
-                        goto finish;
-                }
+                if (wt < 0)
+                        return -errno;
 
                 if (!rd || !wt) {
 
-                        if (acl_add_perm(permset, ACL_READ|ACL_WRITE) < 0) {
-                                r = -errno;
-                                goto finish;
-                        }
+                        if (acl_add_perm(permset, ACL_READ|ACL_WRITE) < 0)
+                                return -errno;
 
                         changed = true;
                 }
         }
 
         if (!changed)
-                goto finish;
+                return 0;
 
-        if (acl_calc_mask(&acl) < 0) {
-                r = -errno;
-                goto finish;
-        }
+        if (acl_calc_mask(&acl) < 0)
+                return -errno;
 
-        if (acl_set_file(path, ACL_TYPE_ACCESS, acl) < 0) {
-                r = -errno;
-                goto finish;
-        }
+        if (acl_set_file(path, ACL_TYPE_ACCESS, acl) < 0)
+                return -errno;
 
-        r = 0;
-
-finish:
-        acl_free(acl);
-
-        return r;
+        return 0;
 }
 
 int devnode_acl_all(const char *seat,
@@ -218,21 +195,18 @@ int devnode_acl_all(const char *seat,
         dir = opendir("/run/udev/static_node-tags/uaccess");
         if (dir) {
                 FOREACH_DIRENT(de, dir, return -errno) {
-                        _cleanup_free_ char *unescaped_devname = NULL;
-                        ssize_t l;
-
-                        l = cunescape(de->d_name, UNESCAPE_RELAX, &unescaped_devname);
-                        if (l < 0)
-                                return l;
-
-                        n = path_join("/dev", unescaped_devname);
-                        if (!n)
-                                return -ENOMEM;
+                        r = readlinkat_malloc(dirfd(dir), de->d_name, &n);
+                        if (r == -ENOENT)
+                                continue;
+                        if (r < 0) {
+                                log_debug_errno(r,
+                                                "Unable to read symlink '/run/udev/static_node-tags/uaccess/%s', ignoring: %m",
+                                                de->d_name);
+                                continue;
+                        }
 
                         log_debug("Found static node %s for seat %s", n, seat);
                         r = set_consume(nodes, n);
-                        if (r == -EEXIST)
-                                continue;
                         if (r < 0)
                                 return r;
                 }

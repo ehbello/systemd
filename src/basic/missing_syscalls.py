@@ -16,6 +16,7 @@ SYSCALLS = [
     'move_mount',
     'name_to_handle_at',
     'open_tree',
+    'openat2',
     'pidfd_open',
     'pidfd_send_signal',
     'pkey_mprotect',
@@ -141,6 +142,7 @@ def print_syscall_defs(syscalls, tables, out):
  * Use 'ninja -C build update-syscall-tables' to download new syscall tables,
  * and 'ninja -C build update-syscall-header' to regenerate this file.
  */
+#pragma once
 ''',
           file=out)
     print(ARCH_CHECK, file=out)

@@ -19,9 +19,12 @@ static struct restrict_ifaces_bpf *restrict_ifaces_bpf_free(struct restrict_ifac
 
 DEFINE_TRIVIAL_CLEANUP_FUNC(struct restrict_ifaces_bpf *, restrict_ifaces_bpf_free);
 
-static int prepare_restrict_ifaces_bpf(Unit* u, bool is_allow_list,
+static int prepare_restrict_ifaces_bpf(
+                Unit* u,
+                bool is_allow_list,
                 const Set *restrict_network_interfaces,
                 struct restrict_ifaces_bpf **ret_object) {
+
         _cleanup_(restrict_ifaces_bpf_freep) struct restrict_ifaces_bpf *obj = NULL;
         _cleanup_(sd_netlink_unrefp) sd_netlink *rtnl = NULL;
         char *iface;
@@ -31,11 +34,11 @@ static int prepare_restrict_ifaces_bpf(Unit* u, bool is_allow_list,
 
         obj = restrict_ifaces_bpf__open();
         if (!obj)
-                return log_unit_error_errno(u, SYNTHETIC_ERRNO(ENOMEM), "Failed to open BPF object");
+                return log_unit_full_errno(u, u ? LOG_ERR : LOG_DEBUG, errno, "Failed to open BPF object: %m");
 
         r = sym_bpf_map__resize(obj->maps.sd_restrictif, MAX(set_size(restrict_network_interfaces), 1u));
         if (r != 0)
-                return log_unit_error_errno(u, r,
+                return log_unit_full_errno(u, u ? LOG_ERR : LOG_WARNING, r,
                                 "Failed to resize BPF map '%s': %m",
                                 sym_bpf_map__name(obj->maps.sd_restrictif));
 
@@ -43,21 +46,24 @@ static int prepare_restrict_ifaces_bpf(Unit* u, bool is_allow_list,
 
         r = restrict_ifaces_bpf__load(obj);
         if (r != 0)
-                return log_unit_error_errno(u, r, "Failed to load BPF object: %m");
+                return log_unit_full_errno(u, u ? LOG_ERR : LOG_DEBUG, r, "Failed to load BPF object: %m");
 
         map_fd = sym_bpf_map__fd(obj->maps.sd_restrictif);
 
         SET_FOREACH(iface, restrict_network_interfaces) {
                 uint8_t dummy = 0;
                 int ifindex;
+
                 ifindex = rtnl_resolve_interface(&rtnl, iface);
                 if (ifindex < 0) {
-                        log_unit_warning_errno(u, ifindex, "Couldn't find index of network interface: %m. Ignoring '%s'", iface);
+                        log_unit_warning_errno(u, ifindex, "Couldn't find index of network interface '%s', ignoring: %m", iface);
                         continue;
                 }
 
                 if (sym_bpf_map_update_elem(map_fd, &ifindex, &dummy, BPF_ANY))
-                        return log_unit_error_errno(u, errno, "Failed to update BPF map '%s' fd: %m", sym_bpf_map__name(obj->maps.sd_restrictif));
+                        return log_unit_full_errno(u, u ? LOG_ERR : LOG_WARNING, errno,
+                                                   "Failed to update BPF map '%s' fd: %m",
+                                                   sym_bpf_map__name(obj->maps.sd_restrictif));
         }
 
         *ret_object = TAKE_PTR(obj);

@@ -394,7 +394,15 @@ int dns_synthesize_answer(
 
                 name = dns_resource_key_name(key);
 
-                if (is_localhost(name)) {
+                if (dns_name_is_empty(name)) {
+                        /* Do nothing. */
+
+                } else if (dns_name_dont_resolve(name)) {
+                        /* Synthesize NXDOMAIN for some of the domains in RFC6303 + RFC6761 */
+                        nxdomain = true;
+                        continue;
+
+                } else if (is_localhost(name)) {
 
                         r = synthesize_localhost_rr(m, key, ifindex, &answer);
                         if (r < 0)

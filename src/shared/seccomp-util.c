@@ -3,12 +3,15 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/seccomp.h>
-#include <seccomp.h>
 #include <stddef.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/shm.h>
 #include <sys/stat.h>
+
+/* include missing_syscall_def.h earlier to make __SNR_foo mapped to __NR_foo. */
+#include "missing_syscall_def.h"
+#include <seccomp.h>
 
 #include "af-list.h"
 #include "alloc-util.h"
@@ -104,7 +107,7 @@ const char* seccomp_arch_to_string(uint32_t c) {
          * Names used here should be the same as those used for ConditionArchitecture=,
          * except for "subarchitectures" like x32. */
 
-        switch(c) {
+        switch (c) {
         case SCMP_ARCH_NATIVE:
                 return "native";
         case SCMP_ARCH_X86:
@@ -283,6 +286,7 @@ const SyscallFilterSet syscall_filter_sets[_SYSCALL_FILTER_SET_MAX] = {
                 .name = "@default",
                 .help = "System calls that are always permitted",
                 .value =
+                "arch_prctl\0"      /* Used during platform-specific initialization by ld-linux.so. */
                 "brk\0"
                 "cacheflush\0"
                 "clock_getres\0"
@@ -712,9 +716,11 @@ const SyscallFilterSet syscall_filter_sets[_SYSCALL_FILTER_SET_MAX] = {
                 .name = "@process",
                 .help = "Process control, execution, namespacing operations",
                 .value =
-                "arch_prctl\0"
                 "capget\0"      /* Able to query arbitrary processes */
                 "clone\0"
+                /* ia64 as the only architecture has clone2, a replacement for clone, but ia64 doesn't
+                 * implement seccomp, so we don't need to list it at all. C.f.
+                 * acce2f71779c54086962fefce3833d886c655f62 in the kernel. */
                 "clone3\0"
                 "execveat\0"
                 "fork\0"
@@ -1223,6 +1229,21 @@ int seccomp_restrict_namespaces(unsigned long retain) {
                 r = seccomp_init_for_arch(&seccomp, arch, SCMP_ACT_ALLOW);
                 if (r < 0)
                         return r;
+
+                /* We cannot filter on individual flags to clone3(), and we need to disable the
+                 * syscall altogether. ENOSYS is used instead of EPERM, so that glibc and other
+                 * users shall fall back to clone(), as if on an older kernel.
+                 *
+                 * C.f. https://github.com/flatpak/flatpak/commit/a10f52a7565c549612c92b8e736a6698a53db330,
+                 * https://github.com/moby/moby/issues/42680. */
+
+                r = seccomp_rule_add_exact(
+                                seccomp,
+                                SCMP_ACT_ERRNO(ENOSYS),
+                                SCMP_SYS(clone3),
+                                0);
+                if (r < 0)
+                        log_debug_errno(r, "Failed to add clone3() rule for architecture %s, ignoring: %m", seccomp_arch_to_string(arch));
 
                 if ((retain & NAMESPACE_FLAGS_ALL) == 0)
                         /* If every single kind of namespace shall be prohibited, then let's block the whole setns() syscall
@@ -1736,13 +1757,11 @@ int seccomp_memory_deny_write_execute(void) {
                 if (r < 0)
                         continue;
 
-#ifdef __NR_pkey_mprotect
                 r = add_seccomp_syscall_filter(seccomp, arch, SCMP_SYS(pkey_mprotect),
                                                1,
                                                SCMP_A2(SCMP_CMP_MASKED_EQ, PROT_EXEC, PROT_EXEC));
                 if (r < 0)
                         continue;
-#endif
 
                 if (shmat_syscall > 0) {
                         r = add_seccomp_syscall_filter(seccomp, arch, shmat_syscall,
@@ -1836,7 +1855,6 @@ int seccomp_restrict_archs(Set *archs) {
 
 int parse_syscall_archs(char **l, Set **ret_archs) {
         _cleanup_set_free_ Set *archs = NULL;
-        char **s;
         int r;
 
         assert(l);
@@ -2063,7 +2081,6 @@ static int seccomp_restrict_sxid(scmp_filter_ctx seccomp, mode_t m) {
         else
                 any = true;
 
-#if SCMP_SYS(open) > 0
         r = seccomp_rule_add_exact(
                         seccomp,
                         SCMP_ACT_ERRNO(EPERM),
@@ -2075,7 +2092,6 @@ static int seccomp_restrict_sxid(scmp_filter_ctx seccomp, mode_t m) {
                 log_debug_errno(r, "Failed to add filter for open: %m");
         else
                 any = true;
-#endif
 
         r = seccomp_rule_add_exact(
                         seccomp,
@@ -2213,7 +2229,6 @@ static int block_open_flag(scmp_filter_ctx seccomp, int flag) {
         /* Blocks open() with the specified flag, where flag is O_SYNC or so. This makes these calls return
          * EINVAL, in the hope the client code will retry without O_SYNC then.  */
 
-#if SCMP_SYS(open) > 0
         r = seccomp_rule_add_exact(
                         seccomp,
                         SCMP_ACT_ERRNO(EINVAL),
@@ -2224,7 +2239,6 @@ static int block_open_flag(scmp_filter_ctx seccomp, int flag) {
                 log_debug_errno(r, "Failed to add filter for open: %m");
         else
                 any = true;
-#endif
 
         r = seccomp_rule_add_exact(
                         seccomp,

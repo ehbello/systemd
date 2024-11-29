@@ -1,7 +1,7 @@
 # This configuration file can be used to auto-format the code base.
 # Not all guidelines specified in CODING_STYLE are followed, so the
 # result MUST NOT be committed indiscriminately, but each automated
-# change should be reviewed and only the appropriate ones commited.
+# change should be reviewed and only the appropriate ones committed.
 #
 # The easiest way to apply the formatting to your changes ONLY,
 # is to use the git-clang-format script (usually installed with clang-format).
@@ -46,7 +46,7 @@ ColumnLimit:     109
 CompactNamespaces: true
 ConstructorInitializerAllOnOneLineOrOnePerLine: true
 ConstructorInitializerIndentWidth: 8
-ContinuationIndentWidth: 8
+ContinuationIndentWidth: 16
 Cpp11BracedListStyle: false
 ForEachMacros:
   - BITMAP_FOREACH

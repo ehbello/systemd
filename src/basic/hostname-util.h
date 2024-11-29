@@ -4,15 +4,13 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#include "env-file.h"
 #include "macro.h"
 #include "strv.h"
 
 typedef enum GetHostnameFlags {
-        GET_HOSTNAME_ALLOW_NONE       = 1 << 0, /* accepts "(none)". */
-        GET_HOSTNAME_ALLOW_LOCALHOST  = 1 << 1, /* accepts "localhost" or friends. */
-        GET_HOSTNAME_FALLBACK_DEFAULT = 1 << 2, /* use default hostname if no hostname is set. */
-        GET_HOSTNAME_SHORT            = 1 << 3, /* kills the FQDN part if present. */
+        GET_HOSTNAME_ALLOW_LOCALHOST  = 1 << 0, /* accepts "localhost" or friends. */
+        GET_HOSTNAME_FALLBACK_DEFAULT = 1 << 1, /* use default hostname if no hostname is set. */
+        GET_HOSTNAME_SHORT            = 1 << 2, /* kills the FQDN part if present. */
 } GetHostnameFlags;
 
 int gethostname_full(GetHostnameFlags flags, char **ret);
@@ -62,6 +60,4 @@ static inline bool is_outbound_hostname(const char *hostname) {
         return STRCASE_IN_SET(hostname, "_outbound", "_outbound.");
 }
 
-static inline int get_pretty_hostname(char **ret) {
-        return parse_env_file(NULL, "/etc/machine-info", "PRETTY_HOSTNAME", ret);
-}
+int get_pretty_hostname(char **ret);

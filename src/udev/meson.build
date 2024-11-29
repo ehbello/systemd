@@ -1,58 +1,60 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-udevadm_sources = files('''
-        udevadm.c
-        udevadm.h
-        udevadm-control.c
-        udevadm-hwdb.c
-        udevadm-info.c
-        udevadm-monitor.c
-        udevadm-settle.c
-        udevadm-test.c
-        udevadm-test-builtin.c
-        udevadm-trigger.c
-        udevadm-util.c
-        udevadm-util.h
-        udevd.c
-'''.split())
+udevadm_sources = files(
+        'udevadm.c',
+        'udevadm.h',
+        'udevadm-control.c',
+        'udevadm-hwdb.c',
+        'udevadm-info.c',
+        'udevadm-lock.c',
+        'udevadm-monitor.c',
+        'udevadm-settle.c',
+        'udevadm-test.c',
+        'udevadm-test-builtin.c',
+        'udevadm-trigger.c',
+        'udevadm-util.c',
+        'udevadm-util.h',
+        'udevadm-wait.c',
+        'udevd.c',
+)
 
-libudevd_core_sources = '''
-        udev-ctrl.c
-        udev-ctrl.h
-        udev-event.c
-        udev-event.h
-        udev-node.c
-        udev-node.h
-        udev-rules.c
-        udev-rules.h
-        udev-watch.c
-        udev-watch.h
-        udev-builtin.c
-        udev-builtin.h
-        udev-builtin-btrfs.c
-        udev-builtin-hwdb.c
-        udev-builtin-input_id.c
-        udev-builtin-keyboard.c
-        udev-builtin-net_id.c
-        udev-builtin-net_setup_link.c
-        udev-builtin-path_id.c
-        udev-builtin-usb_id.c
-        udev-netlink.c
-        udev-netlink.h
-        net/link-config.c
-        net/link-config.h
-'''.split()
+libudevd_core_sources = files(
+        'udev-ctrl.c',
+        'udev-ctrl.h',
+        'udev-event.c',
+        'udev-event.h',
+        'udev-node.c',
+        'udev-node.h',
+        'udev-rules.c',
+        'udev-rules.h',
+        'udev-watch.c',
+        'udev-watch.h',
+        'udev-builtin.c',
+        'udev-builtin.h',
+        'udev-builtin-btrfs.c',
+        'udev-builtin-hwdb.c',
+        'udev-builtin-input_id.c',
+        'udev-builtin-keyboard.c',
+        'udev-builtin-net_id.c',
+        'udev-builtin-net_setup_link.c',
+        'udev-builtin-path_id.c',
+        'udev-builtin-usb_id.c',
+        'udev-netlink.c',
+        'udev-netlink.h',
+        'net/link-config.c',
+        'net/link-config.h',
+)
 
 if conf.get('HAVE_KMOD') == 1
-        libudevd_core_sources += ['udev-builtin-kmod.c']
+        libudevd_core_sources += files('udev-builtin-kmod.c')
 endif
 
 if conf.get('HAVE_BLKID') == 1
-        libudevd_core_sources += ['udev-builtin-blkid.c']
+        libudevd_core_sources += files('udev-builtin-blkid.c')
 endif
 
 if conf.get('HAVE_ACL') == 1
-        libudevd_core_sources += ['udev-builtin-uaccess.c']
+        libudevd_core_sources += files('udev-builtin-uaccess.c')
 endif
 
 ############################################################
@@ -152,7 +154,7 @@ foreach prog : udev_progs
                 install : true,
                 install_dir : udevlibexecdir)
 
-        udev_prog_paths += {name : exe.full_path()}
+        udev_prog_paths += {name : exe}
 endforeach
 
 if install_sysconfdir_samples
@@ -164,7 +166,7 @@ custom_target(
         'udev.pc',
         input : 'udev.pc.in',
         output : 'udev.pc',
-        command : [meson_render_jinja2, config_h, '@INPUT@', '@OUTPUT@'],
+        command : [jinja2_cmdline, '@INPUT@', '@OUTPUT@'],
         install : pkgconfigdatadir != 'no',
         install_dir : pkgconfigdatadir)
 
@@ -174,49 +176,48 @@ if install_sysconfdir
 endif
 
 fuzzers += [
-        [['src/udev/net/fuzz-link-parser.c',
-          'src/fuzz/fuzz.h'],
+        [files('net/fuzz-link-parser.c'),
          [libudevd_core,
           libshared],
          [threads,
           libacl],
          udev_includes],
 
-        [['src/udev/fuzz-udev-rules.c'],
+        [files('fuzz-udev-rules.c'),
          [libudevd_core,
           libshared],
          [threads,
           libacl]],
 
-        [['src/udev/fuzz-udev-rule-parse-value.c']],
+        [files('fuzz-udev-rule-parse-value.c')],
 
-        [['src/udev/fido_id/fuzz-fido-id-desc.c',
-          'src/udev/fido_id/fido_id_desc.c']],
+        [files('fido_id/fuzz-fido-id-desc.c',
+               'fido_id/fido_id_desc.c')],
 ]
 
 tests += [
-        [['src/udev/test-udev-event.c'],
+        [files('test-udev-event.c'),
          [libudevd_core,
           libshared],
          [threads,
           libacl]],
 
-        [['src/udev/test-udev-node.c'],
+        [files('test-udev-node.c'),
          [libudevd_core,
           libshared],
          [threads,
           libacl]],
 
-        [['src/udev/test-udev-builtin.c'],
+        [files('test-udev-builtin.c'),
          [libudevd_core,
           libshared],
          [threads,
           libacl]],
 
-        [['src/udev/test-udev-netlink.c',
-          'src/udev/udev-netlink.c',
-          'src/udev/udev-netlink.h']],
+        [files('test-udev-netlink.c',
+               'udev-netlink.c',
+               'udev-netlink.h')],
 
-        [['src/udev/fido_id/test-fido-id-desc.c',
-          'src/udev/fido_id/fido_id_desc.c']],
+        [files('fido_id/test-fido-id-desc.c',
+               'fido_id/fido_id_desc.c')],
 ]

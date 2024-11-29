@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "alloc-util.h"
+#include "env-file.h"
 #include "hostname-util.h"
 #include "os-util.h"
 #include "string-util.h"
@@ -46,8 +47,7 @@ int gethostname_full(GetHostnameFlags flags, char **ret) {
         assert_se(uname(&u) >= 0);
 
         s = u.nodename;
-        if (isempty(s) ||
-            (!FLAGS_SET(flags, GET_HOSTNAME_ALLOW_NONE) && streq(s, "(none)")) ||
+        if (isempty(s) || streq(s, "(none)") ||
             (!FLAGS_SET(flags, GET_HOSTNAME_ALLOW_LOCALHOST) && is_localhost(s)) ||
             (FLAGS_SET(flags, GET_HOSTNAME_SHORT) && s[0] == '.')) {
                 if (!FLAGS_SET(flags, GET_HOSTNAME_FALLBACK_DEFAULT))
@@ -191,4 +191,21 @@ bool is_localhost(const char *hostname) {
                 endswith_no_case(hostname, ".localhost.") ||
                 endswith_no_case(hostname, ".localhost.localdomain") ||
                 endswith_no_case(hostname, ".localhost.localdomain.");
+}
+
+int get_pretty_hostname(char **ret) {
+        _cleanup_free_ char *n = NULL;
+        int r;
+
+        assert(ret);
+
+        r = parse_env_file(NULL, "/etc/machine-info", "PRETTY_HOSTNAME", &n);
+        if (r < 0)
+                return r;
+
+        if (isempty(n))
+                return -ENXIO;
+
+        *ret = TAKE_PTR(n);
+        return 0;
 }

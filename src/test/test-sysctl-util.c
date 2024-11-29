@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include <sys/utsname.h>
+
 #include "sd-id128.h"
 
 #include "errno-util.h"
@@ -25,8 +27,7 @@ static const char* const cases[] = {
 };
 
 TEST(sysctl_normalize) {
-        const char **s, **expected;
-        STRV_FOREACH_PAIR(s, expected, (const char**) cases) {
+        STRV_FOREACH_PAIR(s, expected, cases) {
                 _cleanup_free_ char *t;
 
                 assert_se(t = strdup(*s));
@@ -38,7 +39,8 @@ TEST(sysctl_normalize) {
 }
 
 TEST(sysctl_read) {
-        _cleanup_free_ char *s = NULL, *h = NULL;
+        _cleanup_free_ char *s = NULL;
+        struct utsname u;
         sd_id128_t a, b;
         int r;
 
@@ -63,8 +65,8 @@ TEST(sysctl_read) {
         s = mfree(s);
 
         assert_se(sysctl_read("kernel/hostname", &s) >= 0);
-        assert_se(gethostname_full(GET_HOSTNAME_ALLOW_NONE|GET_HOSTNAME_ALLOW_LOCALHOST, &h) >= 0);
-        assert_se(streq(s, h));
+        assert_se(uname(&u) >= 0);
+        assert_se(streq_ptr(s, u.nodename));
 
         r = sysctl_write("kernel/hostname", s);
         assert_se(r >= 0 || ERRNO_IS_PRIVILEGE(r) || r == -EROFS);

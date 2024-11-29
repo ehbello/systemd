@@ -42,7 +42,7 @@ int mkdir_safe_internal(
         if ((flags & MKDIR_FOLLOW_SYMLINK) && S_ISLNK(st.st_mode)) {
                 _cleanup_free_ char *p = NULL;
 
-                r = chase_symlinks_and_stat(path, NULL, CHASE_NONEXISTENT, &p, &st, NULL);
+                r = chase_symlinks_and_stat(path, NULL, 0, &p, &st, NULL);
                 if (r < 0)
                         return r;
                 if (r == 0)
@@ -50,6 +50,9 @@ int mkdir_safe_internal(
                                                    flags & ~MKDIR_FOLLOW_SYMLINK,
                                                    _mkdirat);
         }
+
+        if (flags & MKDIR_IGNORE_EXISTING)
+                return 0;
 
         if (!S_ISDIR(st.st_mode))
                 return log_full_errno(flags & MKDIR_WARN_MODE ? LOG_WARNING : LOG_DEBUG, SYNTHETIC_ERRNO(ENOTDIR),
@@ -138,7 +141,7 @@ int mkdir_parents_internal(const char *prefix, const char *path, mode_t mode, ui
                 s[n] = '\0';
 
                 if (!prefix || !path_startswith_full(prefix, path, /* accept_dot_dot= */ false)) {
-                        r = mkdir_safe_internal(path, mode, uid, gid, flags, _mkdirat);
+                        r = mkdir_safe_internal(path, mode, uid, gid, flags | MKDIR_IGNORE_EXISTING, _mkdirat);
                         if (r < 0 && r != -EEXIST)
                                 return r;
                 }
@@ -162,7 +165,7 @@ int mkdir_p_internal(const char *prefix, const char *path, mode_t mode, uid_t ui
 
         assert(_mkdirat != mkdirat);
 
-        r = mkdir_parents_internal(prefix, path, mode, uid, gid, flags, _mkdirat);
+        r = mkdir_parents_internal(prefix, path, mode, uid, gid, flags | MKDIR_FOLLOW_SYMLINK, _mkdirat);
         if (r < 0)
                 return r;
 

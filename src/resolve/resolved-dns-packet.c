@@ -102,7 +102,7 @@ void dns_packet_set_flags(DnsPacket *p, bool dnssec_checking_disabled, bool trun
 
         h = DNS_PACKET_HEADER(p);
 
-        switch(p->protocol) {
+        switch (p->protocol) {
         case DNS_PROTOCOL_LLMNR:
                 assert(!truncated);
 
@@ -941,15 +941,12 @@ int dns_packet_append_rr(DnsPacket *p, const DnsResourceRecord *rr, const DnsAns
                         r = dns_packet_append_raw_string(p, NULL, 0, NULL);
                         if (r < 0)
                                 goto fail;
-                } else {
-                        DnsTxtItem *i;
-
+                } else
                         LIST_FOREACH(items, i, rr->txt.items) {
                                 r = dns_packet_append_raw_string(p, i->data, i->length, NULL);
                                 if (r < 0)
                                         goto fail;
                         }
-                }
 
                 r = 0;
                 break;
@@ -2362,8 +2359,7 @@ static int dns_packet_extract_answer(DnsPacket *p, DnsAnswer **ret_answer) {
                 /* Remember this RR, so that we can potentially merge its ->key object with the
                  * next RR. Note that we only do this if we actually decided to keep the RR around.
                  */
-                dns_resource_record_unref(previous);
-                previous = dns_resource_record_ref(rr);
+                DNS_RR_REPLACE(previous, dns_resource_record_ref(rr));
         }
 
         if (bad_opt) {
@@ -2505,7 +2501,7 @@ int dns_packet_patch_ttls(DnsPacket *p, usec_t timestamp) {
         usec_t k;
         int r;
 
-        k = now(clock_boottime_or_monotonic());
+        k = now(CLOCK_BOOTTIME);
         assert(k >= timestamp);
         k -= timestamp;
 

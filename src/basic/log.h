@@ -31,10 +31,10 @@ typedef enum LogTarget{
  * used a regular log level. */
 #define LOG_NULL (LOG_EMERG - 1)
 
-/* Note to readers: << and >> have lower precedence than & and | */
+/* Note to readers: << and >> have lower precedence (are evaluated earlier) than & and | */
 #define SYNTHETIC_ERRNO(num)                (1 << 30 | (num))
 #define IS_SYNTHETIC_ERRNO(val)             ((val) >> 30 & 1)
-#define ERRNO_VALUE(val)                    (abs(val) & 255)
+#define ERRNO_VALUE(val)                    (abs(val) & ~(1 << 30))
 
 /* The callback function to be invoked when syntax warnings are seen
  * in the unit files. */
@@ -82,6 +82,7 @@ int log_open(void);
 void log_close(void);
 void log_forget_fds(void);
 
+void log_parse_environment_variables(void);
 void log_parse_environment(void);
 
 int log_dispatch_internal(
@@ -272,9 +273,11 @@ int log_emergency_level(void);
         })
 
 #if LOG_TRACE
-#  define log_trace(...) log_debug(__VA_ARGS__)
+#  define log_trace(...)          log_debug(__VA_ARGS__)
+#  define log_trace_errno(...)    log_debug_errno(__VA_ARGS__)
 #else
-#  define log_trace(...) do {} while (0)
+#  define log_trace(...)          do {} while (0)
+#  define log_trace_errno(e, ...) (-ERRNO_VALUE(e))
 #endif
 
 /* Structured logging */
@@ -295,8 +298,16 @@ int log_emergency_level(void);
 
 bool log_on_console(void) _pure_;
 
-/* Helper to prepare various field for structured logging */
-#define LOG_MESSAGE(fmt, ...) "MESSAGE=" fmt, ##__VA_ARGS__
+/* Helper to wrap the main message in structured logging. The macro doesn't do much,
+ * except to provide visual grouping of the format string and its arguments. */
+#if LOG_MESSAGE_VERIFICATION || defined(__COVERITY__)
+/* Do a fake formatting of the message string to let the scanner verify the arguments against the format
+ * message. The variable will never be set to true, but we don't tell the compiler that :) */
+extern bool _log_message_dummy;
+#  define LOG_MESSAGE(fmt, ...) "MESSAGE=%.0d" fmt, (_log_message_dummy && printf(fmt, ##__VA_ARGS__)), ##__VA_ARGS__
+#else
+#  define LOG_MESSAGE(fmt, ...) "MESSAGE=" fmt, ##__VA_ARGS__
+#endif
 
 void log_received_signal(int level, const struct signalfd_siginfo *si);
 

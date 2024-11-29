@@ -180,13 +180,13 @@ finish:
         return r;
 }
 
-/* Fill `new_h` with `path`'s descendent OomdCGroupContexts. Only include descendent cgroups that are possible
+/* Fill 'new_h' with 'path's descendant OomdCGroupContexts. Only include descendant cgroups that are possible
  * candidates for action. That is, only leaf cgroups or cgroups with memory.oom.group set to "1".
  *
- * This function ignores most errors in order to handle cgroups that may have been cleaned up while populating
- * the hashmap.
+ * This function ignores most errors in order to handle cgroups that may have been cleaned up while
+ * populating the hashmap.
  *
- * `new_h` is of the form { key: cgroup paths -> value: OomdCGroupContext } */
+ * 'new_h' is of the form { key: cgroup paths -> value: OomdCGroupContext } */
 static int recursively_get_cgroup_context(Hashmap *new_h, const char *path) {
         _cleanup_free_ char *subpath = NULL;
         _cleanup_closedir_ DIR *d = NULL;
@@ -384,8 +384,8 @@ static int monitor_swap_contexts_handler(sd_event_source *s, uint64_t usec, void
          * is only used to decide which cgroups to kill (and even then only the resource usages of its descendent
          * nodes are the ones that matter). */
 
-        /* Check amount of memory free and swap free so we don't free up swap when memory is still available. */
-        if (oomd_mem_free_below(&m->system_context, 10000 - m->swap_used_limit_permyriad) &&
+        /* Check amount of memory available and swap free so we don't free up swap when memory is still available. */
+        if (oomd_mem_available_below(&m->system_context, 10000 - m->swap_used_limit_permyriad) &&
                         oomd_swap_free_below(&m->system_context, 10000 - m->swap_used_limit_permyriad)) {
                 _cleanup_hashmap_free_ Hashmap *candidates = NULL;
                 _cleanup_free_ char *selected = NULL;
@@ -410,7 +410,7 @@ static int monitor_swap_contexts_handler(sd_event_source *s, uint64_t usec, void
                 if (r < 0)
                         log_notice_errno(r, "Failed to kill any cgroup(s) based on swap: %m");
                 else {
-                        if (selected)
+                        if (selected && r > 0)
                                 log_notice("Killed %s due to memory used (%"PRIu64") / total (%"PRIu64") and "
                                            "swap used (%"PRIu64") / total (%"PRIu64") being more than "
                                            PERMYRIAD_AS_PERCENT_FORMAT_STR,
@@ -518,9 +518,13 @@ static int monitor_memory_pressure_contexts_handler(sd_event_source *s, uint64_t
                         if (r < 0)
                                 log_notice_errno(r, "Failed to kill any cgroup(s) under %s based on pressure: %m", t->path);
                         else {
-                                /* Don't act on all the high pressure cgroups at once; return as soon as we kill one */
+                                /* Don't act on all the high pressure cgroups at once; return as soon as we kill one.
+                                 * If r == 0 then it means there were not eligible candidates, the candidate cgroup
+                                 * disappeared, or the candidate cgroup has no processes by the time we tried to kill
+                                 * it. In either case, go through the event loop again and select a new candidate if
+                                 * pressure is still high. */
                                 m->mem_pressure_post_action_delay_start = usec_now;
-                                if (selected)
+                                if (selected && r > 0)
                                         log_notice("Killed %s due to memory pressure for %s being %lu.%02lu%% > %lu.%02lu%%"
                                                    " for > %s with reclaim activity",
                                                    selected, t->path,

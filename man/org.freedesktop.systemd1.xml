@@ -30,23 +30,19 @@
 
     <para>The service manager exposes a number of objects on the bus: one
     <interfacename>Manager</interfacename> object as a central entry point for clients along with individual objects
-    for each unit and for each queued job. The unit objects each implement a generic
+    for each unit and for each queued job. The unit objects implement a generic
     <interfacename>Unit</interfacename> interface as well as a type-specific interface. For example, service units
     implement both <interfacename>org.freedesktop.systemd1.Unit</interfacename> and
     <interfacename>org.freedesktop.system1.Service</interfacename>. The manager object can list
-    unit and job objects or directly convert a unit name or job id into a bus path of the corresponding
+    unit and job objects or directly convert a unit name or job identifier to a bus path of the corresponding
     D-Bus object.</para>
 
-    <para>Properties exposing time values are usually encoded in microseconds (usec) on the bus, even if
+    <para>Properties exposing time values are usually encoded in microseconds (µs) on the bus, even if
     their corresponding settings in the unit files are in seconds.</para>
 
-    <para>In contrast to most of the other services of the systemd suite, PID 1 does not use
-    <ulink url="https://www.freedesktop.org/software/polkit/docs/latest/">polkit</ulink>
-    for controlling access to privileged operations, but relies exclusively on the low-level D-Bus policy
-    language. (This is done in order to avoid a cyclic dependency between polkit and systemd/PID 1.) This
-    means that sensitive operations exposed by PID 1 on the bus are generally not available to unprivileged
-    processes directly. However, some operations (such as shutdown/reboot/suspend) are made available through the D-Bus
-    API of logind, see
+    <para>PID 1 uses <ulink url="https://www.freedesktop.org/software/polkit/docs/latest/">polkit</ulink> to
+    allow access to privileged operations for unprivileged processes. Some operations (such as
+    shutdown/reboot/suspend) are also available through the D-Bus API of logind, see
     <citerefentry><refentrytitle>org.freedesktop.login1</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
     </para>
   </refsect1>
@@ -168,12 +164,19 @@ node /org/freedesktop/systemd1 {
       Dump(out s output);
       DumpByFileDescriptor(out h fd);
       Reload();
+      @org.freedesktop.DBus.Method.NoReply("true")
       Reexecute();
+      @org.freedesktop.systemd1.Privileged("true")
       Exit();
+      @org.freedesktop.systemd1.Privileged("true")
       Reboot();
+      @org.freedesktop.systemd1.Privileged("true")
       PowerOff();
+      @org.freedesktop.systemd1.Privileged("true")
       Halt();
+      @org.freedesktop.systemd1.Privileged("true")
       KExec();
+      @org.freedesktop.systemd1.Privileged("true")
       SwitchRoot(in  s new_root,
                  in  s init);
       SetEnvironment(in  as assignments);
@@ -393,6 +396,12 @@ node /org/freedesktop/systemd1 {
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       @org.freedesktop.systemd1.Privileged("true")
       readwrite t RuntimeWatchdogUSec = ...;
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
+      @org.freedesktop.systemd1.Privileged("true")
+      readwrite t RuntimeWatchdogPreUSec = ...;
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
+      @org.freedesktop.systemd1.Privileged("true")
+      readwrite s RuntimeWatchdogPreGovernor = '...';
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       @org.freedesktop.systemd1.Privileged("true")
       readwrite t RebootWatchdogUSec = ...;
@@ -642,6 +651,10 @@ node /org/freedesktop/systemd1 {
     <!--property DefaultStandardError is not documented!-->
 
     <!--property RuntimeWatchdogUSec is not documented!-->
+
+    <!--property RuntimeWatchdogPreUSec is not documented!-->
+
+    <!--property RuntimeWatchdogPreGovernor is not documented!-->
 
     <!--property RebootWatchdogUSec is not documented!-->
 
@@ -1045,6 +1058,10 @@ node /org/freedesktop/systemd1 {
 
     <variablelist class="dbus-property" generated="True" extra-ref="RuntimeWatchdogUSec"/>
 
+    <variablelist class="dbus-property" generated="True" extra-ref="RuntimeWatchdogPreUSec"/>
+
+    <variablelist class="dbus-property" generated="True" extra-ref="RuntimeWatchdogPreGovernor"/>
+
     <variablelist class="dbus-property" generated="True" extra-ref="RebootWatchdogUSec"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="KExecWatchdogUSec"/>
@@ -1190,10 +1207,7 @@ node /org/freedesktop/systemd1 {
 
       <para><function>StartUnitWithFlags()</function> is similar to <function>StartUnit()</function> but
       allows the caller to pass an extra <varname>flags</varname> parameter, which does not support any
-      flags for now, and is reserved for future extensions. The new method also changes the behaviour
-      of the <varname>JobRemoved</varname> signal and make it return <literal>skipped</literal> in case
-      the unit activation job is skipped because a <varname>Condition*=</varname> is not satisfied.
-      With the <varname>StartUnit</varname> method, <literal>done</literal> would be returned instead.</para>
+      flags for now, and is reserved for future extensions.</para>
 
       <para><function>StopUnit()</function> is similar to <function>StartUnit()</function> but stops the
       specified unit rather than starting it. Note that the <literal>isolate</literal> mode is invalid for this
@@ -1420,7 +1434,7 @@ node /org/freedesktop/systemd1 {
       <varname>properties</varname> contains properties of the unit, specified like in
       <function>SetUnitProperties()</function>. <varname>aux</varname> is currently unused and should be
       passed as an empty array. See the
-      <ulink url="http://www.freedesktop.org/wiki/Software/systemd/ControlGroupInterface/">New Control Group
+      <ulink url="https://www.freedesktop.org/wiki/Software/systemd/ControlGroupInterface/">New Control Group
       Interface</ulink> for more information how to make use of this functionality for resource control
       purposes.</para>
     </refsect2>
@@ -1642,6 +1656,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly as PartOf = ['...', ...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
+      readonly as Upholds = ['...', ...];
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly as RequiredBy = ['...', ...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly as RequisiteOf = ['...', ...];
@@ -1649,6 +1665,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
       readonly as WantedBy = ['...', ...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly as BoundBy = ['...', ...];
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
+      readonly as UpheldBy = ['...', ...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly as ConsistsOf = ['...', ...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
@@ -1660,13 +1678,13 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly as After = ['...', ...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
-      readonly as OnFailure = ['...', ...];
-      @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
-      readonly as OnFailureOf = ['...', ...];
-      @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly as OnSuccess = ['...', ...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly as OnSuccessOf = ['...', ...];
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
+      readonly as OnFailure = ['...', ...];
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
+      readonly as OnFailureOf = ['...', ...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly as Triggers = ['...', ...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
@@ -1813,15 +1831,19 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
 
     <!--property PartOf is not documented!-->
 
+    <!--property Upholds is not documented!-->
+
     <!--property RequisiteOf is not documented!-->
 
-    <!--property ConsistsOf is not documented!-->
+    <!--property UpheldBy is not documented!-->
 
-    <!--property OnFailureOf is not documented!-->
+    <!--property ConsistsOf is not documented!-->
 
     <!--property OnSuccess is not documented!-->
 
     <!--property OnSuccessOf is not documented!-->
+
+    <!--property OnFailureOf is not documented!-->
 
     <!--property ReloadPropagatedFrom is not documented!-->
 
@@ -1941,6 +1963,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
 
     <variablelist class="dbus-property" generated="True" extra-ref="PartOf"/>
 
+    <variablelist class="dbus-property" generated="True" extra-ref="Upholds"/>
+
     <variablelist class="dbus-property" generated="True" extra-ref="RequiredBy"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="RequisiteOf"/>
@@ -1948,6 +1972,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
     <variablelist class="dbus-property" generated="True" extra-ref="WantedBy"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="BoundBy"/>
+
+    <variablelist class="dbus-property" generated="True" extra-ref="UpheldBy"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="ConsistsOf"/>
 
@@ -1959,13 +1985,13 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
 
     <variablelist class="dbus-property" generated="True" extra-ref="After"/>
 
-    <variablelist class="dbus-property" generated="True" extra-ref="OnFailure"/>
-
-    <variablelist class="dbus-property" generated="True" extra-ref="OnFailureOf"/>
-
     <variablelist class="dbus-property" generated="True" extra-ref="OnSuccess"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="OnSuccessOf"/>
+
+    <variablelist class="dbus-property" generated="True" extra-ref="OnFailure"/>
+
+    <variablelist class="dbus-property" generated="True" extra-ref="OnFailureOf"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="Triggers"/>
 
@@ -2433,6 +2459,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly s ControlGroup = '...';
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
+      readonly t ControlGroupId = ...;
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly t MemoryCurrent = ...;
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly t MemoryAvailable = ...;
@@ -2662,6 +2690,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
       readonly s RootHashSignaturePath = '...';
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly s RootVerity = '...';
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
+      readonly as ExtensionDirectories = ['...', ...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly a(sba(ss)) ExtensionImages = [...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
@@ -3001,6 +3031,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
     <!--property ExecStopPostEx is not documented!-->
 
     <!--property Slice is not documented!-->
+
+    <!--property ControlGroupId is not documented!-->
 
     <!--property MemoryCurrent is not documented!-->
 
@@ -3578,6 +3610,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
 
     <variablelist class="dbus-property" generated="True" extra-ref="ControlGroup"/>
 
+    <variablelist class="dbus-property" generated="True" extra-ref="ControlGroupId"/>
+
     <variablelist class="dbus-property" generated="True" extra-ref="MemoryCurrent"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="MemoryAvailable"/>
@@ -3807,6 +3841,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
     <variablelist class="dbus-property" generated="True" extra-ref="RootHashSignaturePath"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="RootVerity"/>
+
+    <variablelist class="dbus-property" generated="True" extra-ref="ExtensionDirectories"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="ExtensionImages"/>
 
@@ -4166,6 +4202,7 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2eservice {
       <varname>RootHashSignature</varname>
       <varname>MountImages</varname>
       <varname>ExtensionImages</varname>
+      <varname>ExtensionDirectories</varname>
       see systemd.exec(5) for their meaning.</para>
 
       <para><varname>MemoryAvailable</varname> indicates how much unused memory is available to the unit before
@@ -4309,6 +4346,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2esocket {
       readonly s Slice = '...';
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly s ControlGroup = '...';
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
+      readonly t ControlGroupId = ...;
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly t MemoryCurrent = ...;
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
@@ -4539,6 +4578,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2esocket {
       readonly s RootHashSignaturePath = '...';
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly s RootVerity = '...';
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
+      readonly as ExtensionDirectories = ['...', ...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly a(sba(ss)) ExtensionImages = [...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
@@ -4902,6 +4943,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2esocket {
     <!--property ExecStopPost is not documented!-->
 
     <!--property Slice is not documented!-->
+
+    <!--property ControlGroupId is not documented!-->
 
     <!--property MemoryCurrent is not documented!-->
 
@@ -5473,6 +5516,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2esocket {
 
     <variablelist class="dbus-property" generated="True" extra-ref="ControlGroup"/>
 
+    <variablelist class="dbus-property" generated="True" extra-ref="ControlGroupId"/>
+
     <variablelist class="dbus-property" generated="True" extra-ref="MemoryCurrent"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="MemoryAvailable"/>
@@ -5702,6 +5747,8 @@ node /org/freedesktop/systemd1/unit/avahi_2ddaemon_2esocket {
     <variablelist class="dbus-property" generated="True" extra-ref="RootHashSignaturePath"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="RootVerity"/>
+
+    <variablelist class="dbus-property" generated="True" extra-ref="ExtensionDirectories"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="ExtensionImages"/>
 
@@ -6095,6 +6142,8 @@ node /org/freedesktop/systemd1/unit/home_2emount {
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly s ControlGroup = '...';
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
+      readonly t ControlGroupId = ...;
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly t MemoryCurrent = ...;
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly t MemoryAvailable = ...;
@@ -6324,6 +6373,8 @@ node /org/freedesktop/systemd1/unit/home_2emount {
       readonly s RootHashSignaturePath = '...';
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly s RootVerity = '...';
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
+      readonly as ExtensionDirectories = ['...', ...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly a(sba(ss)) ExtensionImages = [...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
@@ -6615,6 +6666,8 @@ node /org/freedesktop/systemd1/unit/home_2emount {
     <!--property ExecRemount is not documented!-->
 
     <!--property Slice is not documented!-->
+
+    <!--property ControlGroupId is not documented!-->
 
     <!--property MemoryCurrent is not documented!-->
 
@@ -7104,6 +7157,8 @@ node /org/freedesktop/systemd1/unit/home_2emount {
 
     <variablelist class="dbus-property" generated="True" extra-ref="ControlGroup"/>
 
+    <variablelist class="dbus-property" generated="True" extra-ref="ControlGroupId"/>
+
     <variablelist class="dbus-property" generated="True" extra-ref="MemoryCurrent"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="MemoryAvailable"/>
@@ -7333,6 +7388,8 @@ node /org/freedesktop/systemd1/unit/home_2emount {
     <variablelist class="dbus-property" generated="True" extra-ref="RootHashSignaturePath"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="RootVerity"/>
+
+    <variablelist class="dbus-property" generated="True" extra-ref="ExtensionDirectories"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="ExtensionImages"/>
 
@@ -7853,6 +7910,8 @@ node /org/freedesktop/systemd1/unit/dev_2dsda3_2eswap {
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly s ControlGroup = '...';
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
+      readonly t ControlGroupId = ...;
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly t MemoryCurrent = ...;
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly t MemoryAvailable = ...;
@@ -8082,6 +8141,8 @@ node /org/freedesktop/systemd1/unit/dev_2dsda3_2eswap {
       readonly s RootHashSignaturePath = '...';
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly s RootVerity = '...';
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
+      readonly as ExtensionDirectories = ['...', ...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
       readonly a(sba(ss)) ExtensionImages = [...];
       @org.freedesktop.DBus.Property.EmitsChangedSignal("const")
@@ -8359,6 +8420,8 @@ node /org/freedesktop/systemd1/unit/dev_2dsda3_2eswap {
     <!--property ExecDeactivate is not documented!-->
 
     <!--property Slice is not documented!-->
+
+    <!--property ControlGroupId is not documented!-->
 
     <!--property MemoryCurrent is not documented!-->
 
@@ -8834,6 +8897,8 @@ node /org/freedesktop/systemd1/unit/dev_2dsda3_2eswap {
 
     <variablelist class="dbus-property" generated="True" extra-ref="ControlGroup"/>
 
+    <variablelist class="dbus-property" generated="True" extra-ref="ControlGroupId"/>
+
     <variablelist class="dbus-property" generated="True" extra-ref="MemoryCurrent"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="MemoryAvailable"/>
@@ -9063,6 +9128,8 @@ node /org/freedesktop/systemd1/unit/dev_2dsda3_2eswap {
     <variablelist class="dbus-property" generated="True" extra-ref="RootHashSignaturePath"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="RootVerity"/>
+
+    <variablelist class="dbus-property" generated="True" extra-ref="ExtensionDirectories"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="ExtensionImages"/>
 
@@ -9442,6 +9509,8 @@ node /org/freedesktop/systemd1/unit/system_2eslice {
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly s ControlGroup = '...';
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
+      readonly t ControlGroupId = ...;
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly t MemoryCurrent = ...;
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly t MemoryAvailable = ...;
@@ -9592,6 +9661,8 @@ node /org/freedesktop/systemd1/unit/system_2eslice {
     <!--method AttachProcesses is not documented!-->
 
     <!--property Slice is not documented!-->
+
+    <!--property ControlGroupId is not documented!-->
 
     <!--property MemoryCurrent is not documented!-->
 
@@ -9746,6 +9817,8 @@ node /org/freedesktop/systemd1/unit/system_2eslice {
     <variablelist class="dbus-property" generated="True" extra-ref="Slice"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="ControlGroup"/>
+
+    <variablelist class="dbus-property" generated="True" extra-ref="ControlGroupId"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="MemoryCurrent"/>
 
@@ -9925,6 +9998,8 @@ node /org/freedesktop/systemd1/unit/session_2d1_2escope {
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly s ControlGroup = '...';
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
+      readonly t ControlGroupId = ...;
+      @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly t MemoryCurrent = ...;
       @org.freedesktop.DBus.Property.EmitsChangedSignal("false")
       readonly t MemoryAvailable = ...;
@@ -10093,6 +10168,8 @@ node /org/freedesktop/systemd1/unit/session_2d1_2escope {
     <!--property RuntimeRandomizedExtraUSec is not documented!-->
 
     <!--property Slice is not documented!-->
+
+    <!--property ControlGroupId is not documented!-->
 
     <!--property MemoryCurrent is not documented!-->
 
@@ -10275,6 +10352,8 @@ node /org/freedesktop/systemd1/unit/session_2d1_2escope {
     <variablelist class="dbus-property" generated="True" extra-ref="Slice"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="ControlGroup"/>
+
+    <variablelist class="dbus-property" generated="True" extra-ref="ControlGroupId"/>
 
     <variablelist class="dbus-property" generated="True" extra-ref="MemoryCurrent"/>
 
@@ -10578,10 +10657,5 @@ $ gdbus introspect --system --dest org.freedesktop.systemd1 \
     </example>
   </refsect1>
 
-  <refsect1>
-    <title>Versioning</title>
-
-    <para>These D-Bus interfaces follow <ulink url="http://0pointer.de/blog/projects/versioning-dbus.html">
-    the usual interface versioning guidelines</ulink>.</para>
-  </refsect1>
+  <xi:include href="org.freedesktop.locale1.xml" xpointer="versioning"/>
 </refentry>

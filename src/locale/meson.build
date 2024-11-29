@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-systemd_localed_sources = files('''
-        localed.c
-        keymap-util.c
-        keymap-util.h
-'''.split())
+systemd_localed_sources = files(
+        'localed.c',
+        'keymap-util.c',
+        'keymap-util.h',
+)
 
 localectl_sources = files('localectl.c')
 
@@ -30,7 +30,7 @@ if conf.get('ENABLE_LOCALED') == 1
 endif
 
 tests += [
-        [['src/locale/test-keymap-util.c',
-          'src/locale/keymap-util.c',
-          'src/locale/keymap-util.h']],
+        [files('test-keymap-util.c',
+               'keymap-util.c',
+               'keymap-util.h')],
 ]

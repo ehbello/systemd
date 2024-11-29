@@ -132,10 +132,27 @@ void user_record_show(UserRecord *hr, bool show_full_group_info) {
                         break;
                 }
 
-                printf(" Password OK: %syes%s\n", ansi_highlight_green(), ansi_normal());
-                break;
+                if (strv_isempty(hr->hashed_password)) {
+                        if (hr->incomplete) /* Record might be incomplete, due to privs */
+                                break;
+                        printf(" Password OK: %sno%s (none set)\n", ansi_highlight(), ansi_normal());
+                        break;
+                }
+                if (strv_contains(hr->hashed_password, "")) {
+                        printf(" Password OK: %sno%s (empty set)\n", ansi_highlight_red(), ansi_normal());
+                        break;
+                }
+                bool has_valid_passwords = false;
+                STRV_FOREACH(p, hr->hashed_password)
+                        if (!hashed_password_is_locked_or_invalid(*p)) {
+                                has_valid_passwords = true;
+                                break;
+                        }
+                if (has_valid_passwords)
+                        printf(" Password OK: %syes%s\n", ansi_highlight_green(), ansi_normal());
+                else
+                        printf(" Password OK: %sno%s (locked)\n", ansi_highlight(), ansi_normal());
         }
-
         if (uid_is_valid(hr->uid))
                 printf("         UID: " UID_FMT "\n", hr->uid);
         if (gid_is_valid(hr->gid)) {
@@ -222,15 +239,12 @@ void user_record_show(UserRecord *hr, bool show_full_group_info) {
         if (hr->preferred_language)
                 printf("    Language: %s\n", hr->preferred_language);
 
-        if (!strv_isempty(hr->environment)) {
-                char **i;
-
+        if (!strv_isempty(hr->environment))
                 STRV_FOREACH(i, hr->environment) {
                         printf(i == hr->environment ?
                                " Environment: %s\n" :
                                "              %s\n", *i);
                 }
-        }
 
         if (hr->locked >= 0)
                 printf("      Locked: %s\n", yes_no(hr->locked));
@@ -460,14 +474,11 @@ void user_record_show(UserRecord *hr, bool show_full_group_info) {
         if (!strv_isempty(hr->ssh_authorized_keys))
                 printf("SSH Pub. Key: %zu\n", strv_length(hr->ssh_authorized_keys));
 
-        if (!strv_isempty(hr->pkcs11_token_uri)) {
-                char **i;
-
+        if (!strv_isempty(hr->pkcs11_token_uri))
                 STRV_FOREACH(i, hr->pkcs11_token_uri)
                         printf(i == hr->pkcs11_token_uri ?
                                "PKCS11 Token: %s\n" :
                                "              %s\n", *i);
-        }
 
         if (hr->n_fido2_hmac_credential > 0)
                 printf(" FIDO2 Token: %zu\n", hr->n_fido2_hmac_credential);
@@ -540,7 +551,6 @@ void group_record_show(GroupRecord *gr, bool show_full_user_info) {
                 }
         } else {
                 const char *prefix = "     Members:";
-                char **i;
 
                 STRV_FOREACH(i, gr->members) {
                         printf("%s %s\n", prefix, *i);
@@ -550,7 +560,6 @@ void group_record_show(GroupRecord *gr, bool show_full_user_info) {
 
         if (!strv_isempty(gr->administrators)) {
                 const char *prefix = "      Admins:";
-                char **i;
 
                 STRV_FOREACH(i, gr->administrators) {
                         printf("%s %s\n", prefix, *i);
