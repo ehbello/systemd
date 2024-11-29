@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
 set -eux
 set -o pipefail
 
@@ -26,6 +27,7 @@ done
 
 # figure out if we have entered the rate limit state
 
+entered_rl=0
 exited_rl=0
 timeout="$(date -ud "2 minutes" +%s)"
 while [[ $(date -u +%s) -le ${timeout} ]]; do

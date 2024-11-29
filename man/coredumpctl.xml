@@ -162,7 +162,7 @@
         <term><option>-1</option></term>
 
         <listitem><para>Show information of the most recent core dump only, instead of listing all known core
-        dumps. (Equivalent to <option>--reverse -n 1</option></para></listitem>
+        dumps. Equivalent to <option>--reverse -n 1</option>.</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -255,6 +255,13 @@
         <listitem><para>Suppresses informational messages about lack
         of access to journal files and possible in-flight coredumps.
         </para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>--all</option></term>
+
+        <listitem><para>Look at all available journal files in <filename>/var/log/journal/</filename>
+        (excluding journal namespaces) instead of only local ones.</para></listitem>
       </varlistentry>
     </variablelist>
   </refsect1>

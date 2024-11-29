@@ -74,8 +74,8 @@
     configuration files, whose syntax and basic set of options is
     described in
     <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
-    however some are created automatically from other configuration,
-    dynamically from system state or programmatically at runtime.
+    however some are created automatically from other configuration
+    files, dynamically from system state or programmatically at runtime.
     Units may be "active" (meaning started, bound, plugged in, …,
     depending on the unit type, see below), or "inactive" (meaning
     stopped, unbound, unplugged, …), as well as in the process of
@@ -583,6 +583,17 @@
 
         <listitem><para>Immediately exits the manager (only available
         for --user instances).</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><constant>SIGRTMIN+25</constant></term>
+
+        <listitem><para>Upon receiving this signal the systemd manager will reexecute itself. This
+        is mostly equivalent to <command>systemctl daemon-reexec</command> except that it will be
+        done asynchronously.</para>
+
+        <para>The systemd system manager treats this signal the same way as
+        <constant>SIGTERM</constant>.</para></listitem>
       </varlistentry>
 
       <varlistentry>

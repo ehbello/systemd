@@ -1,10 +1,13 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <net/if.h>
+#include <netinet/in.h>
+#include <linux/if_arp.h>
 
 #include "conf-parser.h"
 #include "macvlan.h"
 #include "macvlan-util.h"
+#include "networkd-network.h"
 #include "parse-util.h"
 
 DEFINE_CONFIG_PARSE_ENUM(config_parse_macvlan_mode, macvlan_mode, MacVlanMode, "Failed to parse macvlan mode");
@@ -16,6 +19,7 @@ static int netdev_macvlan_fill_message_create(NetDev *netdev, Link *link, sd_net
         assert(netdev);
         assert(link);
         assert(netdev->ifname);
+        assert(link->network);
 
         if (netdev->kind == NETDEV_KIND_MACVLAN)
                 m = MACVLAN(netdev);
@@ -50,6 +54,13 @@ static int netdev_macvlan_fill_message_create(NetDev *netdev, Link *link, sd_net
                 r = sd_netlink_message_append_u32(req, IFLA_MACVLAN_MODE, m->mode);
                 if (r < 0)
                         return log_netdev_error_errno(netdev, r, "Could not append IFLA_MACVLAN_MODE attribute: %m");
+        }
+
+        /* set the nopromisc flag if Promiscuous= of the link is explicitly set to false */
+        if (m->mode == NETDEV_MACVLAN_MODE_PASSTHRU && link->network->promiscuous == 0) {
+                r = sd_netlink_message_append_u16(req, IFLA_MACVLAN_FLAGS, MACVLAN_FLAG_NOPROMISC);
+                if (r < 0)
+                        return log_netdev_error_errno(netdev, r, "Could not append IFLA_MACVLAN_FLAGS attribute: %m");
         }
 
         if (m->bc_queue_length != UINT32_MAX) {
@@ -118,7 +129,7 @@ static void macvlan_done(NetDev *n) {
 
         assert(m);
 
-        set_free_free(m->match_source_mac);
+        set_free(m->match_source_mac);
 }
 
 static void macvlan_init(NetDev *n) {
@@ -144,6 +155,7 @@ const NetDevVTable macvtap_vtable = {
         .sections = NETDEV_COMMON_SECTIONS "MACVTAP\0",
         .fill_message_create = netdev_macvlan_fill_message_create,
         .create_type = NETDEV_CREATE_STACKED,
+        .iftype = ARPHRD_ETHER,
         .generate_mac = true,
 };
 
@@ -154,5 +166,6 @@ const NetDevVTable macvlan_vtable = {
         .sections = NETDEV_COMMON_SECTIONS "MACVLAN\0",
         .fill_message_create = netdev_macvlan_fill_message_create,
         .create_type = NETDEV_CREATE_STACKED,
+        .iftype = ARPHRD_ETHER,
         .generate_mac = true,
 };
