@@ -40,13 +40,13 @@ int make_lock_file_at(int dir_fd, const char *p, int operation, LockFile *ret) {
         if (!t)
                 return -ENOMEM;
 
-        fd = xopenat_lock(dfd,
-                          p,
-                          O_CREAT|O_RDWR|O_NOFOLLOW|O_CLOEXEC|O_NOCTTY,
-                          /* xopen_flags = */ 0,
-                          0600,
-                          LOCK_UNPOSIX,
-                          operation);
+        fd = xopenat_lock_full(dfd,
+                               p,
+                               O_CREAT|O_RDWR|O_NOFOLLOW|O_CLOEXEC|O_NOCTTY,
+                               /* xopen_flags = */ 0,
+                               0600,
+                               LOCK_UNPOSIX,
+                               operation);
         if (fd < 0)
                 return fd == -EAGAIN ? -EBUSY : fd;
 
@@ -139,7 +139,14 @@ static int fcntl_lock(int fd, int operation, bool ofd) {
                 .l_len = 0,
         }));
 
-        if (r == -EACCES) /* Treat EACCESS/EAGAIN the same as per man page. */
+        /* If we are doing non-blocking operations, treat EACCES/EAGAIN the same as per man page. But if
+         * not, propagate EACCES back, as it will likely be due to an LSM denying the operation (for example
+         * LXC with AppArmor when running on kernel < 6.2), and in some cases we want to gracefully
+         * fallback (e.g.: PrivateNetwork=yes). As per documentation, it's only the non-blocking operation
+         * F_SETLK that might return EACCES on some platforms (although the Linux implementation doesn't
+         * seem to), as F_SETLKW and F_OFD_SETLKW block so this is not an issue, and F_OFD_SETLK is documented
+         * to only return EAGAIN if the lock is already held. */
+        if ((operation & LOCK_NB) && r == -EACCES)
                 r = -EAGAIN;
 
         return r;

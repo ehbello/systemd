@@ -29,15 +29,11 @@ static inline void freep(void *p) {
 #define _cleanup_free_ _cleanup_(freep)
 
 _malloc_ _alloc_(1) _returns_nonnull_ _warn_unused_result_
-static inline void *xmalloc(size_t size) {
-        void *p;
-        assert_se(BS->AllocatePool(EfiLoaderData, size, &p) == EFI_SUCCESS);
-        return p;
-}
+void *xmalloc(size_t size);
 
 _malloc_ _alloc_(1, 2) _returns_nonnull_ _warn_unused_result_
-static inline void *xmalloc_multiply(size_t size, size_t n) {
-        assert_se(!__builtin_mul_overflow(size, n, &size));
+static inline void *xmalloc_multiply(size_t n, size_t size) {
+        assert_se(MUL_ASSIGN_SAFE(&size, n));
         return xmalloc(size);
 }
 
@@ -57,7 +53,7 @@ static inline void* xmemdup(const void *p, size_t l) {
         return memcpy(xmalloc(l), p, l);
 }
 
-#define xnew(type, n) ((type *) xmalloc_multiply(sizeof(type), (n)))
+#define xnew(type, n) ((type *) xmalloc_multiply((n), sizeof(type)))
 
 typedef struct {
         EFI_PHYSICAL_ADDRESS addr;
@@ -88,7 +84,7 @@ static inline Pages xmalloc_pages(
 EFI_STATUS efivar_set(const EFI_GUID *vendor, const char16_t *name, const char16_t *value, uint32_t flags);
 EFI_STATUS efivar_set_raw(const EFI_GUID *vendor, const char16_t *name, const void *buf, size_t size, uint32_t flags);
 EFI_STATUS efivar_set_uint_string(const EFI_GUID *vendor, const char16_t *name, size_t i, uint32_t flags);
-EFI_STATUS efivar_set_uint32_le(const EFI_GUID *vendor, const char16_t *NAME, uint32_t value, uint32_t flags);
+EFI_STATUS efivar_set_uint32_le(const EFI_GUID *vendor, const char16_t *name, uint32_t value, uint32_t flags);
 EFI_STATUS efivar_set_uint64_le(const EFI_GUID *vendor, const char16_t *name, uint64_t value, uint32_t flags);
 void efivar_set_time_usec(const EFI_GUID *vendor, const char16_t *name, uint64_t usec);
 

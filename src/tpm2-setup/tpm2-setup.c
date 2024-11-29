@@ -18,6 +18,7 @@
 
 static char *arg_tpm2_device = NULL;
 static bool arg_early = false;
+static bool arg_graceful = false;
 
 STATIC_DESTRUCTOR_REGISTER(arg_tpm2_device, freep);
 
@@ -43,6 +44,7 @@ static int help(int argc, char *argv[], void *userdata) {
                "     --tpm2-device=PATH\n"
                "                          Pick TPM2 device\n"
                "     --early=BOOL         Store SRK public key in /run/ rather than /var/lib/\n"
+               "     --graceful           Exit gracefully if no TPM2 device is found\n"
                "\nSee the %2$s for details.\n",
                program_invocation_short_name,
                link,
@@ -59,6 +61,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_VERSION = 0x100,
                 ARG_TPM2_DEVICE,
                 ARG_EARLY,
+                ARG_GRACEFUL,
         };
 
         static const struct option options[] = {
@@ -66,6 +69,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "version",     no_argument,       NULL, ARG_VERSION     },
                 { "tpm2-device", required_argument, NULL, ARG_TPM2_DEVICE },
                 { "early",       required_argument, NULL, ARG_EARLY       },
+                { "graceful",    no_argument,       NULL, ARG_GRACEFUL    },
                 {}
         };
 
@@ -98,6 +102,10 @@ static int parse_argv(int argc, char *argv[]) {
                                 return log_error_errno(r, "Failed to parse --early= argument: %s", optarg);
 
                         arg_early = r;
+                        break;
+
+                case ARG_GRACEFUL:
+                        arg_graceful = true;
                         break;
 
                 case '?':
@@ -204,9 +212,9 @@ static int load_public_key_tpm2(struct public_key_data *ret) {
 
         assert(ret);
 
-        r = tpm2_context_new(arg_tpm2_device, &c);
+        r = tpm2_context_new_or_warn(arg_tpm2_device, &c);
         if (r < 0)
-                return log_error_errno(r, "Failed to create TPM2 context: %m");
+                return r;
 
         r = tpm2_get_or_create_srk(
                         c,
@@ -247,6 +255,11 @@ static int run(int argc, char *argv[]) {
         if (r <= 0)
                 return r;
 
+        if (arg_graceful && tpm2_support() != TPM2_SUPPORT_FULL) {
+                log_notice("No complete TPM2 support detected, exiting gracefully.");
+                return EXIT_SUCCESS;
+        }
+
         umask(0022);
 
         _cleanup_(public_key_data_done) struct public_key_data runtime_key = {}, persistent_key = {}, tpm2_key = {};
@@ -284,7 +297,8 @@ static int run(int argc, char *argv[]) {
         if (runtime_key.pkey) {
                 if (memcmp_nn(tpm2_key.fingerprint, tpm2_key.fingerprint_size,
                              runtime_key.fingerprint, runtime_key.fingerprint_size) != 0)
-                        return log_error_errno(SYNTHETIC_ERRNO(ENOTRECOVERABLE), "Saved runtime SRK differs from TPM SRK, refusing.");
+                        return log_error_errno(SYNTHETIC_ERRNO(ENOTRECOVERABLE),
+                                               "Saved runtime SRK differs from TPM SRK, refusing.");
 
                 if (arg_early) {
                         log_info("SRK saved in '%s' matches SRK in TPM2.", runtime_key.path);
@@ -351,7 +365,8 @@ static int run(int argc, char *argv[]) {
                 return log_error_errno(r, "Failed to marshal TPM2_PUBLIC key.");
 
         if (fwrite(marshalled, 1, marshalled_size, f) != marshalled_size)
-                return log_error_errno(errno, "Failed to write SRK public key file '%s'.", tpm2b_public_path);
+                return log_error_errno(SYNTHETIC_ERRNO(EIO),
+                                       "Failed to write SRK public key file '%s'.", tpm2b_public_path);
 
         if (fchmod(fileno(f), 0444) < 0)
                 return log_error_errno(errno, "Failed to adjust access mode of SRK public key file '%s' to 0444: %m", tpm2b_public_path);
