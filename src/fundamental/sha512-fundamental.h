@@ -16,8 +16,6 @@
 #ifndef __SDBOOT_SHA512_H
 #define __SDBOOT_SHA512_H
 
-#include <efi.h>
-
 typedef struct {
         uint64_t h[8], w[16];
         size_t size, total;

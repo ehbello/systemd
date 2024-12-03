@@ -22,7 +22,7 @@
 #include "random-seed.h"
 #include "sbat.h"
 #include "secure-boot.h"
-#include "sha512.h"
+#include "sha512-fundamental.h"
 #include "shim.h"
 #include "smbios.h"
 #include "ticks.h"

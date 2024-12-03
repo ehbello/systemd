@@ -14,7 +14,7 @@
  */
 
 #include "memory-util-fundamental.h"
-#include "sha512.h"
+#include "sha512-fundamental.h"
 
 static const uint64_t K[80] = {
         0x428a2f98d728ae22, 0x7137449123ef65cd,

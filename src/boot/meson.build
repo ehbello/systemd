@@ -280,7 +280,6 @@ libefi_sources = files(
 
 systemd_boot_sources = files(
         'boot.c',
-        'sha512.c',
 )
 
 stub_sources = files(

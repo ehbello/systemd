@@ -9,6 +9,7 @@ fundamental_sources = files(
         'iovec-util-fundamental.h',
         'sha1-fundamental.c',
         'sha256-fundamental.c',
+        'sha512-fundamental.c',
         'string-util-fundamental.c',
         'uki.c',
 )
