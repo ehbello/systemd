@@ -30,7 +30,11 @@ jobs:
           - { COMPILER: "clang", COMPILER_VERSION: "14", LINKER: "mold", CRYPTOLIB: "gcrypt"  }
           - { COMPILER: "clang", COMPILER_VERSION: "16", LINKER: "bfd",  CRYPTOLIB: "openssl" }
           - { COMPILER: "clang", COMPILER_VERSION: "18", LINKER: "lld",  CRYPTOLIB: "auto"    }
-    env: ${{ matrix.env }}
+    env:
+      COMPILER: ${{ matrix.env['COMPILER'] }}
+      COMPILER_VERSION: ${{ matrix.env['COMPILER_VERSION'] }}
+      LINKER: ${{ matrix.env['LINKER'] }}
+      CRYPTOLIB: ${{ matrix.env['CRYPTOLIB'] }}
     steps:
       - name: Repository checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
