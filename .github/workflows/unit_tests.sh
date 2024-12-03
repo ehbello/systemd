@@ -60,7 +60,8 @@ for phase in "${PHASES[@]}"; do
             done
             apt-get -y update
             apt-get -y build-dep systemd
-            apt-get -y install "${ADDITIONAL_DEPS[@]}"
+            DEBIAN_FRONTEND=noninteractive apt-get -y install "${ADDITIONAL_DEPS[@]}"
+
             pip3 install -r .github/workflows/requirements.txt --require-hashes --break-system-packages
 
             # Make sure the build dir is accessible even when drop privileges, otherwise the unprivileged

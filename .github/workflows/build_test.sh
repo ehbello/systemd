@@ -123,7 +123,8 @@ for f in /etc/apt/sources.list.d/*.sources; do
 done
 sudo apt-get -y update
 sudo apt-get -y build-dep systemd
-sudo apt-get -y install "${PACKAGES[@]}"
+sudo DEBIAN_FRONTEND=noninteractive apt-get -y install "${PACKAGES[@]}"
+
 # Install more or less recent meson and ninja with pip, since the distro versions don't
 # always support all the features we need (like --optimization=). Since the build-dep
 # command above installs the distro versions, let's install the pip ones just
