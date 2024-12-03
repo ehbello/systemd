@@ -92,7 +92,7 @@ typedef struct {
         char16_t *entry_default_efivar;
         char16_t *entry_oneshot;
         char16_t *entry_saved;
-        UINT8 *hash;
+        uint8_t *hash;
         bool editor;
         bool auto_entries;
         bool auto_firmware;
@@ -393,19 +393,19 @@ static bool password_read(char **line_out) {
         bool enter;
 
         size = 64;
-        line = AllocatePool(size * sizeof(char16_t));
+        line = xmalloc(size * sizeof(char16_t));
         len = 0;
 
-        uefi_call_wrapper(ST->ConOut->EnableCursor, 2, ST->ConOut, TRUE);
+        ST->ConOut->EnableCursor(ST->ConOut, true);
 
-        enter = FALSE;
-        exit = FALSE;
+        enter = false;
+        exit = false;
         while (!exit) {
                 EFI_STATUS err;
-                UINT64 key;
+                uint64_t key;
 
-                err = console_key_read(&key, TRUE);
-                if (EFI_ERROR(err))
+                err = console_key_read(&key, true);
+                if (err != EFI_SUCCESS)
                         continue;
 
                 switch (key) {
@@ -414,18 +414,18 @@ static bool password_read(char **line_out) {
                 case KEYPRESS(EFI_CONTROL_PRESSED, 0, 'g'):
                 case KEYPRESS(EFI_CONTROL_PRESSED, 0, CHAR_CTRL('c')):
                 case KEYPRESS(EFI_CONTROL_PRESSED, 0, CHAR_CTRL('g')):
-                        exit = TRUE;
+                        exit = true;
                         break;
 
-                case KEYPRESS(0, 0, CHAR_LINEFEED):
-                case KEYPRESS(0, 0, CHAR_CARRIAGE_RETURN):
+                case KEYPRESS(0, 0, '\n'):
+                case KEYPRESS(0, 0, '\r'):
                         *line_out = line;
                         line[len] = '\0';
-                        enter = TRUE;
-                        exit = TRUE;
+                        enter = true;
+                        exit = true;
                         break;
 
-                case KEYPRESS(0, 0, CHAR_BACKSPACE):
+                case KEYPRESS(0, 0, '\b'):
                         if (len > 0)
                                 len--;
                         continue;
@@ -440,9 +440,9 @@ static bool password_read(char **line_out) {
                 }
         }
 
-        uefi_call_wrapper(ST->ConOut->EnableCursor, 2, ST->ConOut, FALSE);
+        ST->ConOut->EnableCursor(ST->ConOut, false);
         if (!enter)
-                FreePool(line);
+                free(line);
         return enter;
 }
 
@@ -746,11 +746,12 @@ static bool menu_run(
         size_t idx, idx_first = 0, idx_last = 0;
         bool new_mode = true, clear = true;
         bool refresh = true, highlight = false;
+        bool allow_editor = false;
         size_t x_start = 0, y_start = 0, y_status = 0, x_max, y_max;
         _cleanup_(strv_freep) char16_t **lines = NULL;
         _cleanup_free_ char16_t *clearline = NULL, *separator = NULL, *status = NULL;
         char *password;
-        UINT8 *hash;
+        uint8_t *hash;
         uint64_t timeout_efivar_saved = config->timeout_sec_efivar;
         uint32_t timeout_remain = config->timeout_sec == TIMEOUT_MENU_FORCE ? 0 : config->timeout_sec;
         int64_t console_mode_initial = ST->ConOut->Mode->Mode, console_mode_efivar_saved = config->console_mode_efivar;
@@ -1086,27 +1087,28 @@ static bool menu_run(
                         print_at(1, y_status, COLOR_EDIT, clearline + 2);
                         allow_editor = config->hash == NULL;
                         if (!allow_editor) {
-                                uefi_call_wrapper(ST->ConOut->SetCursorPosition, 3, ST->ConOut, 0, y_max-1);
-                                uefi_call_wrapper(ST->ConOut->OutputString, 2, ST->ConOut, clearline+1);
-                                uefi_call_wrapper(ST->ConOut->SetCursorPosition, 3, ST->ConOut, 0, y_max-1);
-                                uefi_call_wrapper(ST->ConOut->OutputString, 2, ST->ConOut, L"Enter password: ");
+                                ST->ConOut->SetCursorPosition(ST->ConOut, 0, y_max-1);
+                                ST->ConOut->OutputString(ST->ConOut, clearline+1);
+                                ST->ConOut->SetCursorPosition(ST->ConOut, 0, y_max-1);
+                                ST->ConOut->OutputString(ST->ConOut, (char16_t *) u"Enter password: ");
                                 if (password_read(&password)) {
-                                        size_t len = strlena(password);
-                                        hash = AllocatePool(64);
+                                        size_t len = strlen8((const char *) password);
+                                        hash = xmalloc(64);
                                         sha512_compute(password, len, hash);
+                                        size_t i;
                                         for (i = 0; i < 64; i++)
                                                 if (hash[i] != config->hash[i])
                                                         break;
                                         allow_editor = i == 64;
-                                        FreePool(password);
-                                        FreePool(hash);
+                                        free(password);
+                                        free(hash);
                                         if (!allow_editor)
-                                                status = StrDuplicate(L"Invalid password.");
+                                                status = xstrdup16(u"Invalid password.");
                                 }
                         }
                         if (allow_editor) {
-                                uefi_call_wrapper(ST->ConOut->SetCursorPosition, 3, ST->ConOut, 0, y_max-1);
-                                uefi_call_wrapper(ST->ConOut->OutputString, 2, ST->ConOut, clearline+1);
+                                ST->ConOut->SetCursorPosition(ST->ConOut, 0, y_max-1);
+                                ST->ConOut->OutputString(ST->ConOut, clearline+1);
                                 if (line_edit(&config->entries[idx_highlight]->options, x_max - 2, y_status))
                                     action = ACTION_RUN;
                         }
@@ -1313,7 +1315,7 @@ static size_t config_defaults_load_from_file(Config *config, char *content) {
         assert(config);
         assert(content);
 
-        while ((line = line_get_key_value(content, " \t", &pos, &key, &value)))
+        while ((line = line_get_key_value(content, " \t", &pos, &key, &value))) {
                 if (streq8(key, "timeout")) {
                         if (streq8(value, "menu-disabled"))
                                 config->timeout_sec_config = TIMEOUT_MENU_DISABLED;
@@ -1400,9 +1402,9 @@ static size_t config_defaults_load_from_file(Config *config, char *content) {
                         }
 
                 } else if (streq8(key, "password")) {
-                        UINT8 *hash = hash_str_to_array(value);
+                        uint8_t *hash = hash_str_to_array(value);
                         if (hash) {
-                                FreePool(config->hash);
+                                free(config->hash);
                                 config->hash = hash;
                         }
                 }
@@ -1631,7 +1633,7 @@ static size_t boot_entry_add_type1(
         _cleanup_(file_closep) EFI_FILE *handle = NULL;
         err = root_dir->Open(root_dir, &handle, entry->loader, EFI_FILE_MODE_READ, 0ULL);
         if (err != EFI_SUCCESS)
-                return;
+                return pos;
 
         entry->device = device;
         entry->id = xstrdup16(file);
@@ -1641,7 +1643,7 @@ static size_t boot_entry_add_type1(
 
         boot_entry_parse_tries(entry, path, file, u".conf");
         TAKE_PTR(entry);
-        
+
         return pos;
 }
 
@@ -1677,19 +1679,21 @@ static EFI_STATUS efivar_get_timeout(const char16_t *var, uint64_t *ret_value) {
         return EFI_SUCCESS;
 }
 
-static void config_load_defaults(Config *config, EFI_HANDLE *device, EFI_FILE *root_dir, char16_t *loaded_image_path, void *image_base) {
+static void config_load_defaults(Config *config, EFI_HANDLE *device, EFI_FILE *root_dir, const char16_t *loaded_image_path, void *image_base) {
         _cleanup_free_ char *content = NULL;
         size_t content_size;
         size_t len = 0;
         size_t pos = 0;
         EFI_STATUS err;
-        char *sections[] = {
-                (CHAR8 *)".config",
+        const char *sections[] = {
+                ".config",
                 NULL
         };
         size_t addr;
 
         assert(root_dir);
+
+        const uint16_t dropin_path[] = u"\\loader\\entries";
 
         *config = (Config) {
                 .editor = true,
@@ -1703,10 +1707,13 @@ static void config_load_defaults(Config *config, EFI_HANDLE *device, EFI_FILE *r
                 .timeout_sec_efivar = TIMEOUT_UNSET,
         };
 
-        err = pe_memory_locate_sections(image_base, sections, &addr, NULL, &len);
-        if (err == EFI_SUCCESS && len > 0) {
-                content = AllocatePool(len + 1);
-                CopyMem(content, image_base + addr, len);
+        PeSectionVector section_vector = {};
+        err = pe_memory_locate_sections(image_base, sections, &section_vector);
+        if (err == EFI_SUCCESS && section_vector.memory_size > 0) {
+                addr = section_vector.file_offset;
+                len = section_vector.file_size;
+                content = xmalloc(len + 1);
+                memcpy(content, (const char *)image_base + addr, len);
                 content[len] = '\0';
         } else {
                 err = file_read(root_dir, u"\\loader\\loader.conf", 0, 0, &content, &content_size);
@@ -1728,11 +1735,12 @@ static void config_load_defaults(Config *config, EFI_HANDLE *device, EFI_FILE *r
                 size_t index = 0;
                 pos += end;
                 while (content_size > pos) {
-                        char16_t *file_name = PoolPrint(L"entry%d.conf", index++);
-                        end = boot_entry_add_type1(config, device, file_name,
+                        char16_t *file_name = xasprintf("entry%zu.conf", index++);
+                        end = boot_entry_add_type1(config, device, root_dir, dropin_path, file_name,
                                 content + pos, loaded_image_path);
+
                         pos += end;
-                        FreePool(file_name);
+                        free(file_name);
                 }
         }
 
@@ -2345,7 +2353,7 @@ static void boot_entry_add_type2(
                 if (err != EFI_SUCCESS)
                         continue;
 
-                _cleanup_free_ char16_t *os_pretty_name = NULL, *os_image_id = NULL, *os_name = NULL, *os_id = NULL, *os_id_like = NULL;
+                _cleanup_free_ char16_t *os_pretty_name = NULL, *os_image_id = NULL, *os_name = NULL, *os_id = NULL, *os_id_like = NULL,
                         *os_image_version = NULL, *os_version = NULL, *os_version_id = NULL, *os_build_id = NULL;
                 char *line, *key, *value;
                 size_t pos = 0;
@@ -2354,7 +2362,7 @@ static void boot_entry_add_type2(
                 while ((line = line_get_key_value(content, "=", &pos, &key, &value)))
                         if (streq8(key, "NAME")) {
                                 free(os_name);
-                                os_name = xstra_to_str(value);
+                                os_name = xstr8_to_16(value);
 
                         } else if (streq8(key, "PRETTY_NAME")) {
                                 free(os_pretty_name);
@@ -2378,7 +2386,7 @@ static void boot_entry_add_type2(
 
                         } else if (streq8(key, "ID_LIKE")) {
                                 free(os_id_like);
-                                os_id_like = xstra_to_str(value);
+                                os_id_like = xstr8_to_16(value);
 
                         } else if (streq8(key, "VERSION")) {
                                 free(os_version);

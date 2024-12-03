@@ -16,15 +16,17 @@
 #ifndef __SDBOOT_SHA512_H
 #define __SDBOOT_SHA512_H
 
+#include <efi.h>
+
 typedef struct {
-        UINT64 h[8], w[16];
-        UINTN size, total;
+        uint64_t h[8], w[16];
+        size_t size, total;
 } Sha512Context;
 
-VOID sha512_create(Sha512Context *context);
-VOID sha512_update(Sha512Context *context, VOID *data, UINTN length);
-VOID sha512_finish(Sha512Context *context, UINT8 *output);
+void sha512_create(Sha512Context *context);
+void sha512_update(Sha512Context *context, void *data, size_t length);
+void sha512_finish(Sha512Context *context, uint8_t *output);
 
-VOID sha512_compute(VOID *data, UINTN length, UINT8 *output);
+void sha512_compute(void *data, size_t length, uint8_t *output);
 
 #endif

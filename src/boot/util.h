@@ -130,7 +130,7 @@ EFI_STATUS chunked_read(EFI_FILE *file, size_t *size, void *buf);
 EFI_STATUS file_read(EFI_FILE *dir, const char16_t *name, uint64_t offset, size_t size, char **content, size_t *content_size);
 EFI_STATUS file_handle_read(EFI_FILE *handle, uint64_t offset, size_t size, char **ret, size_t *ret_size);
 
-UINT8 *hash_str_to_array(CHAR8 *value);
+uint8_t *hash_str_to_array(char *value);
 
 static inline void file_closep(EFI_FILE **handle) {
         if (!*handle)

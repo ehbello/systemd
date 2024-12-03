@@ -180,15 +180,15 @@ EFI_STATUS file_read(
         return file_handle_read(handle, offset, size, ret, ret_size);
 }
 
-UINT8 *hash_str_to_array(CHAR8 *value) {
-        UINTN i;
-        UINT8 b;
-        UINTN len = strlena(value);
-        UINT8 *hash = NULL;
-        BOOLEAN invalid = len != 64*2;
+uint8_t *hash_str_to_array(char *value) {
+        size_t i;
+        uint8_t b;
+        size_t len = strlen8(value);
+        uint8_t *hash = NULL;
+        bool invalid = len != 64*2;
 
         if (!invalid) {
-                hash = AllocatePool(64);
+                hash = xmalloc(64);
                 for (i = 0; i < 64*2; i++) {
                         switch (value[i]) {
                         case '0' ... '9':
@@ -201,7 +201,7 @@ UINT8 *hash_str_to_array(CHAR8 *value) {
                                 b = value[i] - 'A' + 10;
                                 break;
                         default:
-                                invalid = TRUE;
+                                invalid = true;
                                 break;
                         }
 
@@ -215,7 +215,7 @@ UINT8 *hash_str_to_array(CHAR8 *value) {
                 }
         }
         if (invalid) {
-                FreePool(hash);
+                free(hash);
                 hash = NULL;
         }
         return hash;

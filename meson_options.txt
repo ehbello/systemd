@@ -100,6 +100,8 @@ option('efi', type : 'boolean',
        description : 'enable EFI support')
 option('tpm', type : 'boolean',
        description : 'TPM should be used to log events and extend the registers')
+option('password', type : 'boolean',
+       description : 'Define if Secure Boot password is allowed')
 option('environment-d', type : 'boolean',
        description : 'support for environment.d')
 option('binfmt', type : 'boolean',

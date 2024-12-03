@@ -13,12 +13,9 @@
  * Copyright (C) 2017 kitsunyan <kitsunyan@inbox.ru>
  */
 
-#include <efi.h>
-#include <efilib.h>
-
 #include "sha512.h"
 
-static const UINT64 K[80] = {
+static const uint64_t K[80] = {
         0x428a2f98d728ae22, 0x7137449123ef65cd,
         0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,
         0x3956c25bf348b538, 0x59f111f1b605d019,
@@ -62,14 +59,14 @@ static const UINT64 K[80] = {
 };
 
 #define be_swap(var) { \
-        (var) = (UINT64) ((UINT8 *) &(var))[0] << 56 | \
-                (UINT64) ((UINT8 *) &(var))[1] << 48 | \
-                (UINT64) ((UINT8 *) &(var))[2] << 40 | \
-                (UINT64) ((UINT8 *) &(var))[3] << 32 | \
-                (UINT64) ((UINT8 *) &(var))[4] << 24 | \
-                (UINT64) ((UINT8 *) &(var))[5] << 16 | \
-                (UINT64) ((UINT8 *) &(var))[6] << 8 | \
-                (UINT64) ((UINT8 *) &(var))[7]; \
+        (var) = (uint64_t) ((uint8_t *) &(var))[0] << 56 | \
+                (uint64_t) ((uint8_t *) &(var))[1] << 48 | \
+                (uint64_t) ((uint8_t *) &(var))[2] << 40 | \
+                (uint64_t) ((uint8_t *) &(var))[3] << 32 | \
+                (uint64_t) ((uint8_t *) &(var))[4] << 24 | \
+                (uint64_t) ((uint8_t *) &(var))[5] << 16 | \
+                (uint64_t) ((uint8_t *) &(var))[6] << 8 | \
+                (uint64_t) ((uint8_t *) &(var))[7]; \
 }
 
 #define rotr(x, n) (((x) >> (n)) | ((x) << (64 - (n))))
@@ -80,11 +77,11 @@ static const UINT64 K[80] = {
 #define s0(x) (rotr(x, 1) ^ rotr(x, 8) ^ (x >> 7))
 #define s1(x) (rotr(x, 19) ^ rotr(x, 61) ^ (x >> 6))
 
-static VOID sha512_block(Sha512Context *context) {
-        UINTN i;
-        UINT64 t1, t2;
-        UINT64 a, b, c, d, e, f, g, h;
-        UINT64 *w;
+static void sha512_block(Sha512Context *context) {
+        size_t i;
+        uint64_t t1, t2;
+        uint64_t a, b, c, d, e, f, g, h;
+        uint64_t *w;
 
         a = context->h[0];
         b = context->h[1];
@@ -124,7 +121,7 @@ static VOID sha512_block(Sha512Context *context) {
         context->h[7] += h;
 }
 
-VOID sha512_create(Sha512Context *context) {
+void sha512_create(Sha512Context *context) {
         context->h[0] = 0x6a09e667f3bcc908;
         context->h[1] = 0xbb67ae8584caa73b;
         context->h[2] = 0x3c6ef372fe94f82b;
@@ -137,9 +134,9 @@ VOID sha512_create(Sha512Context *context) {
         context->total = 0;
 }
 
-VOID sha512_update(Sha512Context *context, VOID *data, UINTN length) {
-        UINTN count, size;
-        VOID *ptr;
+void sha512_update(Sha512Context *context, void *data, size_t length) {
+        size_t count, size;
+        void *ptr;
 
         context->total += length;
         size = context->size;
@@ -147,7 +144,7 @@ VOID sha512_update(Sha512Context *context, VOID *data, UINTN length) {
                 count = 128 - size;
                 count = length < count ? length : count;
 
-                ptr = (VOID *) context->w + size;
+                ptr = (void *) context->w + size;
                 if (data) {
                         CopyMem(ptr, data, count);
                         data += count;
@@ -165,9 +162,9 @@ VOID sha512_update(Sha512Context *context, VOID *data, UINTN length) {
         context->size = size;
 }
 
-VOID sha512_finish(Sha512Context *context, UINT8 *output) {
-        UINTN i, total, padding;
-        UINT8 end;
+void sha512_finish(Sha512Context *context, uint8_t *output) {
+        size_t i, total, padding;
+        uint8_t end;
 
         total = context->total;
         padding = (context->size >= 112 ? 128 : 0) + 112 - context->size;
@@ -185,7 +182,7 @@ VOID sha512_finish(Sha512Context *context, UINT8 *output) {
         CopyMem(output, context->h, 64);
 }
 
-VOID sha512_compute(VOID *data, UINTN length, UINT8 *output) {
+void sha512_compute(void *data, size_t length, uint8_t *output) {
         Sha512Context context;
         sha512_create(&context);
         sha512_update(&context, data, length);
