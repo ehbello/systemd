@@ -13,6 +13,7 @@
  * Copyright (C) 2017 kitsunyan <kitsunyan@inbox.ru>
  */
 
+#include "memory-util-fundamental.h"
 #include "sha512.h"
 
 static const uint64_t K[80] = {
@@ -144,12 +145,12 @@ void sha512_update(Sha512Context *context, void *data, size_t length) {
                 count = 128 - size;
                 count = length < count ? length : count;
 
-                ptr = (void *) context->w + size;
+                ptr = ((uint64_t *) context->w) + size;
                 if (data) {
-                        CopyMem(ptr, data, count);
-                        data += count;
+                        memcpy(ptr, data, count);
+                        data = (uint8_t *)data + count;
                 } else
-                        SetMem(ptr, count, 0);
+                        memset(ptr, 0, count);
 
                 size += count;
                 length -= count;
@@ -179,7 +180,7 @@ void sha512_finish(Sha512Context *context, uint8_t *output) {
 
         for (i = 0; i < 8; i++)
                 be_swap(context->h[i]);
-        CopyMem(output, context->h, 64);
+        memcpy(output, context->h, 64);
 }
 
 void sha512_compute(void *data, size_t length, uint8_t *output) {

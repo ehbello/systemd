@@ -55,7 +55,7 @@ endif
 
 efi_conf = configuration_data()
 efi_conf.set10('ENABLE_TPM', get_option('tpm'))
-efi_conf.set10('ENABLE_PASSSWORD', get_option('password'))
+efi_conf.set10('ENABLE_PASSWORD', get_option('password'))
 
 foreach ctype : ['color-normal', 'color-entry', 'color-highlight', 'color-edit']
         c = get_option('efi-' + ctype).split(',')
