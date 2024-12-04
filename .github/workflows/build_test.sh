@@ -70,6 +70,15 @@ LINKER="${LINKER:?}"
 CRYPTOLIB="${CRYPTOLIB:?}"
 RELEASE="$(lsb_release -cs)"
 
+# This is added by default, and it is often broken, but we don't need anything from it
+sudo rm -f /etc/apt/sources.list.d/microsoft-prod.{list,sources}
+# add-apt-repository --enable-source does not work on deb822 style sources.
+for f in /etc/apt/sources.list.d/*.sources; do
+    sudo sed -i "s/Types: deb/Types: deb deb-src/g" "$f"
+done
+# Ensure the packages database exists (and it's updated) before checks
+sudo apt-get -y update
+
 # Note: As we use postfixed clang/gcc binaries, we need to override $AR
 #       as well, otherwise meson falls back to ar from binutils which
 #       doesn't work with LTO
@@ -94,6 +103,7 @@ if [[ "$COMPILER" == clang ]]; then
             sudo gpg --yes --dearmor --output /usr/share/keyrings/apt-llvm-org.gpg
         echo "deb [signed-by=/usr/share/keyrings/apt-llvm-org.gpg] http://apt.llvm.org/$RELEASE/ llvm-toolchain-$RELEASE-$COMPILER_VERSION main" | \
             sudo tee /etc/apt/sources.list.d/llvm-toolchain.list
+        sudo apt-get -y update
     fi
 
     PACKAGES+=("clang-$COMPILER_VERSION" "lldb-$COMPILER_VERSION" "python3-lldb-$COMPILER_VERSION" "lld-$COMPILER_VERSION" "clangd-$COMPILER_VERSION")
@@ -108,6 +118,7 @@ elif [[ "$COMPILER" == gcc ]]; then
         # Latest gcc stack deb packages provided by
         # https://launchpad.net/~ubuntu-toolchain-r/+archive/ubuntu/test
         sudo add-apt-repository -y --no-update ppa:ubuntu-toolchain-r/test
+        sudo apt-get -y update
     fi
 
     PACKAGES+=("gcc-$COMPILER_VERSION" "gcc-$COMPILER_VERSION-multilib")
@@ -115,13 +126,6 @@ else
     fatal "Unknown compiler: $COMPILER"
 fi
 
-# This is added by default, and it is often broken, but we don't need anything from it
-sudo rm -f /etc/apt/sources.list.d/microsoft-prod.{list,sources}
-# add-apt-repository --enable-source does not work on deb822 style sources.
-for f in /etc/apt/sources.list.d/*.sources; do
-    sudo sed -i "s/Types: deb/Types: deb deb-src/g" "$f"
-done
-sudo apt-get -y update
 sudo apt-get -y build-dep systemd
 sudo DEBIAN_FRONTEND=noninteractive apt-get -y install "${PACKAGES[@]}"
 
